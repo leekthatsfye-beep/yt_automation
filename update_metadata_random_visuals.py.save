@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import random
+from pathlib import Path
+from typing import Optional
+
+ROOT = Path(__file__).resolve().parent
+META_DIR = ROOT / "metadata"
+IMAGES_DIR = ROOT / "images"
+VISUALS_DIR = ROOT / "visuals"  # optional for video loops
+
+def list_visual_files() -> list[str]:
+    files = []
+    for ext in [".mp4", ".mov", ".mkv"]:
+        files += [f.name for f in VISUALS_DIR.glob(f"*{ext}")]
+    for ext in [".jpg", ".jpeg", ".png"]:
+        files += [f.name for f in IMAGES_DIR.glob(f"*{ext}")]
+    return files
+
+def get_random_visual() -> Optional[str]:
+    visuals = list_visual_files()
+    return random.choice(visuals) if visuals else None
+
+def choose_visual_interactively(stem: str) -> Optional[str]:
+    visuals = list_visual_files()
+    if not visuals:
+        print("No visual files found.")
+        return None
+    print(f"\nAvailable visuals for '{stem}':")
+    for idx, v in enumerate(visuals, start=1):
+        print(f"{idx}) {v}")
+    print("r) Random")
+    print("0) Skip")
+    choice = input("Enter your choice: ").strip().lower()
+    if choice == "r":
+        return get_random_visual()
+    if choice == "0":
+        return None
+    try:
+        index = int(choice) - 1
+        return visuals[index] if 0 <= index < len(visuals) else None
+    except ValueError:
+        return None
+
+def update_metadata_file(meta_path: Path, visual: Optional[str]) -> None:
+    with open(meta_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if visual:
+        data["visual"] = visual
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    if visual:
+        print(f"Updated {meta_path.name} with visual: {visual}")
+    else:
+        print(f"Skipped {meta_path.name} (no visual assigned)")
+
+def process_single_file(filepath: Path, interactive: bool, force: bool) -> None:
+    if not filepath.exists():
+        print(f"File not found: {filepath}")
+        return
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if "visual" in data and not force:
+        print(f"{filepath.name} already has a visual, use --force to override.")
+        return
+    visual = choose_visual_interactively(filepath.stem) if interactive else get_random_visual()
+    update_metadata_file(filepath, visual)
+
+def process_metadata_files(interactive: bool, force: bool) -> None:
+    for meta_path in META_DIR.glob("*.json"):
+        with open(meta_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "visual" in data and not force:
+            print(f"Skipping {meta_path.name} (visual already set)")
+            continue
+        visual = choose_visual_interactively(meta_path.stem) if interactive else get_random_visual()
+        update_metadata_file(meta_path, visual)
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Assign visuals to beat metadata.")
+    parser.add_argument("--interactive", action="store_true", help="Manually choose visuals.")
+    parser.add_argument("--force", action="store_true", help="Override existing visuals.")
+    parser.add_argument("--file", type=str, help="Specific metadata file or stem to process.")
+    args = parser.parse_args()
+
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            if not file_path.suffix:
+                file_path = META_DIR / f"{file_path.name}.json"
+        process_single_file(file_path, args.interactive, args.force)
+    else:
+        process_metadata_files(args.interactive, args.force)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,19 @@
+render:
+  image_default: "images/default.jpg"
+  font_path: "/System/Library/Fonts/Supplemental/Arial.ttf"
+  width: 1920
+  height: 1080
+  fps: 30
+
+# Anti-Content-ID visual filters — applied to artist video clips (not original content)
+# Defeats YouTube visual fingerprinting on music video footage
+anti_cid:
+  enabled: true
+  hflip: true           # mirror horizontally (most effective)
+  zoom: 1.07            # 7% zoom-in (shifts pixel grid)
+  speed: 1.03           # 3% faster (defeats temporal fingerprint)
+  brightness: 0.04      # slight brightness bump
+  saturation: 1.12      # 12% saturation boost
+  hue_shift: 5          # 5-degree hue rotation
+  vignette: true        # cinematic edge darkening
+  noise: 6              # subtle per-frame noise (0-255, invisible at 6)

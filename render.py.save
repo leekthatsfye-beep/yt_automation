@@ -1,0 +1,104 @@
+/Users/fyefye/yt_automation/render.py import os, json, subprocess
+from pathlib import Path
+import yaml
+from PIL import Image, ImageDraw, ImageFont
+
+ROOT = Path(__file__).resolve().parent
+
+def run(cmd):
+    subprocess.run(cmd, check=True)
+
+def load_config():
+    with open(ROOT / "config.yaml", "r") as f:
+        return yaml.safe_load(f)
+
+def make_thumbnail(title, bg_path, out_path, font_path):
+    img = Image.open(bg_path).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype(font_path, 72)
+    margin = 80
+    max_w = img.size[0] - 2 * margin
+
+    words = title.split()
+    lines, line = [], ""
+    for w in words:
+        test = (line + " " + w).strip()
+        if draw.textlength(test, font=font) <= max_w:
+            line = test
+        else:
+            lines.append(line)
+            line = w
+    if line:
+        lines.append(line)
+
+    y = 140
+    for ln in lines[:3]:
+        draw.text((margin + 3, y + 3), ln, font=font, fill=(0, 0, 0))
+        draw.text((margin, y), ln, font=font, fill=(255, 255, 255))
+        y += 90
+
+    img.save(out_path, "JPEG", quality=92)
+
+def render_video(audio_path, image_path, out_mp4, width, height, fps):
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},"
+        f"zoompan=z='min(zoom+0.0006,1.12)':d=1:"
+        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"s={width}x{height}:fps={fps},format=yuv420p"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", str(image_path),
+        "-i", str(audio_path),
+        "-c:v", "libx264", "-tune", "stillimage",
+        "-vf", vf,
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest",
+        str(out_mp4)
+    ]
+    run(cmd)
+
+def main():
+    cfg = load_config()
+    beats_dir = ROOT / "beats"
+    meta_dir = ROOT / "metadata"
+    out_dir = ROOT / "output"
+    out_dir.mkdir(exist_ok=True)
+
+    default_img = ROOT / cfg["render"]["image_default"]
+    font_path = cfg["render"]["font_path"]
+    w, h, fps = cfg["render"]["width"], cfg["render"]["height"], cfg["render"]["fps"]
+
+    audio_files = list(beats_dir.glob("*.wav")) + list(beats_dir.glob("*.mp3"))
+
+    for audio_file in sorted(audio_files):
+        stem = audio_file.stem
+        meta_file = meta_dir / f"{stem}.json"
+        if not meta_file.exists():
+            print(f"[SKIP] Missing metadata for {stem}")
+            continue
+
+        with open(meta_file, "r") as f:
+            meta = json.load(f)
+
+        title = meta.get("title", stem)
+
+        img = ROOT / "images" / f"{stem}.jpg"
+        if not img.exists():
+            img = default_img
+
+        mp4_path = out_dir / f"{stem}.mp4"
+        thumb_path = out_dir / f"{stem}_thumb.jpg"
+
+        if not thumb_path.exists():
+            make_thumbnail(title, img, thumb_path, font_path)
+
+        if not mp4_path.exists():
+            print(f"[RENDER] {stem}")
+            render_video(audio_file, img, mp4_path, w, h, fps)
+
+if __name__ == "__main__":
+    main()
+wc -l render.pyxxxxx

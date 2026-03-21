@@ -1,0 +1,88 @@
+{
+  "id": "simple_beat",
+  "name": "Simple Beat",
+  "genre": "trap",
+  "description": "Clean simple arrangement — intro, verse, hook, verse, hook, outro. Works for any genre. No overthinking.",
+  "total_bars": 64,
+  "bpm_range": [60, 200],
+  "sections": [
+    {
+      "name": "intro",
+      "label": "Intro",
+      "start_bar": 0,
+      "length_bars": 4,
+      "energy": 0.3,
+      "description": "Melody only — 4 bars, hook the listener",
+      "patterns": ["melody"]
+    },
+    {
+      "name": "verse_1",
+      "label": "Verse 1",
+      "start_bar": 4,
+      "length_bars": 8,
+      "energy": 0.6,
+      "description": "Full groove — drums, bass, melody",
+      "patterns": ["melody", "drums", "bass"]
+    },
+    {
+      "name": "chorus",
+      "label": "Hook",
+      "start_bar": 12,
+      "length_bars": 8,
+      "energy": 1.0,
+      "description": "Everything hits — full energy",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "verse_2",
+      "label": "Verse 2",
+      "start_bar": 20,
+      "length_bars": 8,
+      "energy": 0.6,
+      "description": "Back to groove",
+      "patterns": ["melody", "drums", "bass"]
+    },
+    {
+      "name": "chorus",
+      "label": "Hook 2",
+      "start_bar": 28,
+      "length_bars": 8,
+      "energy": 1.0,
+      "description": "Hook again — keep it familiar",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "bridge",
+      "label": "Bridge",
+      "start_bar": 36,
+      "length_bars": 8,
+      "energy": 0.35,
+      "description": "Strip back — melody only, build tension",
+      "patterns": ["melody"]
+    },
+    {
+      "name": "chorus",
+      "label": "Final Hook",
+      "start_bar": 44,
+      "length_bars": 12,
+      "energy": 1.0,
+      "description": "Last hook — longest section, max energy",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "outro",
+      "label": "Outro",
+      "start_bar": 56,
+      "length_bars": 8,
+      "energy": 0.2,
+      "description": "Fade out clean",
+      "patterns": ["melody"]
+    }
+  ],
+  "youtube_notes": {
+    "target_duration_sec": [120, 180],
+    "first_drop_by_sec": 15,
+    "hook_in_first_sec": 3,
+    "energy_variation_sec": 15
+  }
+}

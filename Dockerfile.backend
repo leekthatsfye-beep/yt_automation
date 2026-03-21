@@ -1,0 +1,33 @@
+FROM python:3.13-slim
+
+# System deps: ffmpeg for video encoding, fonts for thumbnails, curl for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    fonts-liberation \
+    libjpeg62-turbo \
+    libpng16-16 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps (cached layer)
+COPY requirements-docker.txt .
+RUN pip install --no-cache-dir -r requirements-docker.txt
+
+# Copy project (filtered by .dockerignore)
+COPY . .
+
+# Create data directories
+RUN mkdir -p beats output metadata images brand studio logs
+
+# Env
+ENV FY3_DOCKER=1
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8000/api/status || exit 1
+
+CMD ["uvicorn", "app.backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

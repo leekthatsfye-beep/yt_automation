@@ -1,0 +1,53 @@
+# === Heavy directories (ignore entirely) ===
+.venv/
+.venv_ml/
+.venv_demucs/
+~/
+node_modules/
+.next/
+.turbo/
+__pycache__/
+logs/
+output/
+beats/
+images/
+brand/
+bowl_gospel/
+fy3_tiggy_pack/
+metadata/
+separated/
+.airbit_chrome_profile/
+vocals/
+remixes/
+
+# === Secrets ===
+client_secret.json
+token.json
+.env
+*.env
+
+# === Cache/data ===
+*.json
+!arrangements/templates/*.json
+!app/frontend/package.json
+!app/frontend/tsconfig.json
+!config.yaml
+
+# === Generated/binary ===
+*.pyc
+*.mp3
+*.wav
+*.mp4
+*.mov
+*.flp
+uploads_log.json
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Whitelist arrangement templates ===
+!arrangements/templates/*.json
+
+# === Embedded git repos ===
+app/frontend/.git/

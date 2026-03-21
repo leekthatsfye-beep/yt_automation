@@ -1,0 +1,80 @@
+{
+  "id": "drop_first",
+  "name": "Drop First",
+  "genre": "trap",
+  "description": "Hook hits bar 1 — full energy from the jump. YouTube retention killer: no intro, instant payoff. Strip back into verse, then double down.",
+  "total_bars": 80,
+  "bpm_range": [120, 165],
+  "sections": [
+    {
+      "name": "drop_1",
+      "label": "Drop (Hook)",
+      "start_bar": 0,
+      "length_bars": 8,
+      "energy": 1.0,
+      "description": "EVERYTHING hits bar 1 — melody, drums, 808, the works. This IS the hook. Viewer knows what the beat is in 2 seconds."
+    },
+    {
+      "name": "verse",
+      "label": "Verse 1",
+      "start_bar": 8,
+      "length_bars": 16,
+      "energy": 0.6,
+      "description": "Pull back — strip drums to core groove, bass rides. Breathing room for the rapper."
+    },
+    {
+      "name": "build",
+      "label": "Build",
+      "start_bar": 24,
+      "length_bars": 4,
+      "energy": 0.5,
+      "description": "Quick tension ramp — perc rolls, melody variation, riser FX into drop 2."
+    },
+    {
+      "name": "drop_2",
+      "label": "Drop 2",
+      "start_bar": 28,
+      "length_bars": 8,
+      "energy": 1.0,
+      "description": "Second full hit — same energy as bar 1 but feels earned after the verse."
+    },
+    {
+      "name": "verse",
+      "label": "Verse 2",
+      "start_bar": 36,
+      "length_bars": 16,
+      "energy": 0.6,
+      "description": "Second verse groove — keep the pocket."
+    },
+    {
+      "name": "breakdown",
+      "label": "Breakdown",
+      "start_bar": 52,
+      "length_bars": 8,
+      "energy": 0.25,
+      "description": "Strip to melody + keys only — contrast before final drop. Longest quiet moment in the beat."
+    },
+    {
+      "name": "drop_3",
+      "label": "Final Drop",
+      "start_bar": 60,
+      "length_bars": 12,
+      "energy": 1.0,
+      "description": "Longest drop — ride it out. Everything in, no holding back."
+    },
+    {
+      "name": "outro",
+      "label": "Outro",
+      "start_bar": 72,
+      "length_bars": 8,
+      "energy": 0.15,
+      "description": "Quick fade — melody rings, elements strip out."
+    }
+  ],
+  "youtube_notes": {
+    "target_duration_sec": [150, 210],
+    "first_drop_by_sec": 0,
+    "hook_in_first_sec": 0,
+    "energy_variation_sec": 18
+  }
+}

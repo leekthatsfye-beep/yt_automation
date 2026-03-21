@@ -1,0 +1,97 @@
+{
+  "id": "rnb_groove",
+  "name": "R&B Groove",
+  "genre": "rnb",
+  "description": "Smooth R&B with lush chords, gradual builds, and a warm vibe. Longer sections for vocal space.",
+  "total_bars": 88,
+  "bpm_range": [65, 110],
+  "sections": [
+    {
+      "name": "intro",
+      "label": "Intro",
+      "start_bar": 0,
+      "length_bars": 8,
+      "energy": 0.3,
+      "description": "Smooth chord progression — set the mood",
+      "patterns": ["melody", "keys"]
+    },
+    {
+      "name": "verse_1",
+      "label": "Verse 1",
+      "start_bar": 8,
+      "length_bars": 16,
+      "energy": 0.5,
+      "description": "Groove establishes — drums, bass, chords",
+      "patterns": ["melody", "drums", "bass", "keys"]
+    },
+    {
+      "name": "prechorus",
+      "label": "Pre-Chorus",
+      "start_bar": 24,
+      "length_bars": 4,
+      "energy": 0.65,
+      "description": "Builds anticipation — add layers",
+      "patterns": ["melody", "drums", "bass", "keys", "fx"]
+    },
+    {
+      "name": "chorus_1",
+      "label": "Chorus",
+      "start_bar": 28,
+      "length_bars": 8,
+      "energy": 0.85,
+      "description": "Full arrangement — everything hits",
+      "patterns": ["melody", "drums", "bass", "keys", "fx"]
+    },
+    {
+      "name": "verse_2",
+      "label": "Verse 2",
+      "start_bar": 36,
+      "length_bars": 16,
+      "energy": 0.55,
+      "description": "Second verse with slight variation",
+      "patterns": ["melody", "drums", "bass", "keys"]
+    },
+    {
+      "name": "chorus_2",
+      "label": "Chorus 2",
+      "start_bar": 52,
+      "length_bars": 8,
+      "energy": 0.9,
+      "description": "Repeat hook — maybe add ad-libs/fx",
+      "patterns": ["melody", "drums", "bass", "keys", "fx"]
+    },
+    {
+      "name": "bridge",
+      "label": "Bridge",
+      "start_bar": 60,
+      "length_bars": 8,
+      "energy": 0.4,
+      "description": "Key change or texture shift — emotional moment",
+      "patterns": ["melody", "keys"]
+    },
+    {
+      "name": "chorus_3",
+      "label": "Final Chorus",
+      "start_bar": 68,
+      "length_bars": 8,
+      "energy": 0.95,
+      "description": "Final chorus — biggest energy",
+      "patterns": ["melody", "drums", "bass", "keys", "fx"]
+    },
+    {
+      "name": "outro",
+      "label": "Outro",
+      "start_bar": 76,
+      "length_bars": 12,
+      "energy": 0.25,
+      "description": "Long smooth fadeout — chords ring out",
+      "patterns": ["melody", "keys"]
+    }
+  ],
+  "youtube_notes": {
+    "target_duration_sec": [180, 240],
+    "first_drop_by_sec": 45,
+    "hook_in_first_sec": 5,
+    "energy_variation_sec": 24
+  }
+}

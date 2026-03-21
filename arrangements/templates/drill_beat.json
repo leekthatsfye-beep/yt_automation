@@ -1,0 +1,88 @@
+{
+  "id": "drill_beat",
+  "name": "Drill Beat",
+  "genre": "drill",
+  "description": "Dark aggressive drill with sliding 808s, quick build-ups, and relentless drops. UK/NY drill pacing.",
+  "total_bars": 72,
+  "bpm_range": [135, 150],
+  "sections": [
+    {
+      "name": "intro",
+      "label": "Intro",
+      "start_bar": 0,
+      "length_bars": 4,
+      "energy": 0.25,
+      "description": "Dark atmospheric pad or melody — eerie mood setter",
+      "patterns": ["melody"]
+    },
+    {
+      "name": "build",
+      "label": "Build",
+      "start_bar": 4,
+      "length_bars": 4,
+      "energy": 0.5,
+      "description": "Hi-hats and percs enter — tension ramp",
+      "patterns": ["melody", "perc"]
+    },
+    {
+      "name": "drop_1",
+      "label": "Drop 1",
+      "start_bar": 8,
+      "length_bars": 8,
+      "energy": 1.0,
+      "description": "Aggressive first drop — sliding 808s hit hard at ~15 seconds",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "verse",
+      "label": "Verse",
+      "start_bar": 16,
+      "length_bars": 16,
+      "energy": 0.6,
+      "description": "Main verse groove — hi-hats rolling, bass pattern",
+      "patterns": ["melody", "drums", "bass"]
+    },
+    {
+      "name": "drop_2",
+      "label": "Drop 2",
+      "start_bar": 32,
+      "length_bars": 8,
+      "energy": 1.0,
+      "description": "Bigger second drop — variation on first",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "breakdown",
+      "label": "Breakdown",
+      "start_bar": 40,
+      "length_bars": 8,
+      "energy": 0.3,
+      "description": "Half-time feel or stripped back — breathing room",
+      "patterns": ["melody", "perc"]
+    },
+    {
+      "name": "drop_3",
+      "label": "Final Drop",
+      "start_bar": 48,
+      "length_bars": 16,
+      "energy": 1.0,
+      "description": "Final relentless section — no mercy",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "outro",
+      "label": "Outro",
+      "start_bar": 64,
+      "length_bars": 8,
+      "energy": 0.15,
+      "description": "Dark resolve — quick fade",
+      "patterns": ["melody"]
+    }
+  ],
+  "youtube_notes": {
+    "target_duration_sec": [130, 190],
+    "first_drop_by_sec": 15,
+    "hook_in_first_sec": 3,
+    "energy_variation_sec": 16
+  }
+}

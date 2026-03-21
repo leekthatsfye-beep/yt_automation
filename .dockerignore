@@ -1,0 +1,45 @@
+# Virtual environments
+.venv*
+venv*
+
+# Node
+node_modules
+.next
+
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+
+# Data directories (mounted as volumes)
+beats/*
+output/*
+studio/*
+logs/*
+
+# Sensitive files
+.env
+client_secret.json
+token.json
+app_settings.json
+
+# Standalone scripts
+telegram_bot.py
+generate_pwa_icons.py
+generate_spinning_logo.py
+generate_model_photos.py
+
+# Dev files
+*.md
+.claude
+.cursor
+bowl_gospel
+fy3pack
+
+# OS files
+.DS_Store
+Thumbs.db

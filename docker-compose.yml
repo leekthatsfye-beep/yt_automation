@@ -1,0 +1,57 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - FY3_DOCKER=1
+    volumes:
+      # Data directories (persistent named volumes)
+      - fy3-beats:/app/beats
+      - fy3-output:/app/output
+      - fy3-metadata:/app/metadata
+      - fy3-images:/app/images
+      - fy3-brand:/app/brand
+      - fy3-studio:/app/studio
+      - fy3-logs:/app/logs
+      # Config files (bind mounts — create these on host first)
+      - ./config.yaml:/app/config.yaml:ro
+      - ./uploads_log.json:/app/uploads_log.json
+      - ./social_uploads_log.json:/app/social_uploads_log.json
+      - ./app_settings.json:/app/app_settings.json
+      # YouTube OAuth (optional — mount if authenticated)
+      # - ./client_secret.json:/app/client_secret.json:ro
+      # - ./token.json:/app/token.json
+    networks:
+      - fy3-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        API_BASE_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - fy3-network
+    restart: unless-stopped
+
+networks:
+  fy3-network:
+    driver: bridge
+
+volumes:
+  fy3-beats:
+  fy3-output:
+  fy3-metadata:
+  fy3-images:
+  fy3-brand:
+  fy3-studio:
+  fy3-logs:

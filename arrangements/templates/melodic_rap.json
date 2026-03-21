@@ -1,0 +1,88 @@
+{
+  "id": "melodic_rap",
+  "name": "Melodic Rap",
+  "genre": "melodic",
+  "description": "Melodic rap beat with emotional hooks, spacey pads, and catchy melodies. Think Juice WRLD, Lil Uzi, Gunna vibes.",
+  "total_bars": 80,
+  "bpm_range": [130, 160],
+  "sections": [
+    {
+      "name": "intro",
+      "label": "Intro",
+      "start_bar": 0,
+      "length_bars": 4,
+      "energy": 0.35,
+      "description": "Melody statement — catchy hook plays immediately",
+      "patterns": ["melody"]
+    },
+    {
+      "name": "verse_1",
+      "label": "Verse 1",
+      "start_bar": 4,
+      "length_bars": 16,
+      "energy": 0.55,
+      "description": "Melodic patterns — bass and drums enter",
+      "patterns": ["melody", "drums", "bass"]
+    },
+    {
+      "name": "hook_1",
+      "label": "Hook",
+      "start_bar": 20,
+      "length_bars": 8,
+      "energy": 0.9,
+      "description": "Catchy hook — full arrangement, memorable melody",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "verse_2",
+      "label": "Verse 2",
+      "start_bar": 28,
+      "length_bars": 16,
+      "energy": 0.6,
+      "description": "Progression — new melodic elements or variations",
+      "patterns": ["melody", "drums", "bass"]
+    },
+    {
+      "name": "hook_2",
+      "label": "Hook 2",
+      "start_bar": 44,
+      "length_bars": 8,
+      "energy": 0.9,
+      "description": "Repeat hook — builds familiarity",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "bridge",
+      "label": "Bridge",
+      "start_bar": 52,
+      "length_bars": 8,
+      "energy": 0.3,
+      "description": "Atmospheric breakdown — spacey pads, maybe reversed melody",
+      "patterns": ["melody", "fx"]
+    },
+    {
+      "name": "hook_3",
+      "label": "Final Hook",
+      "start_bar": 60,
+      "length_bars": 12,
+      "energy": 1.0,
+      "description": "Biggest hook — full energy, all layers stacked",
+      "patterns": ["melody", "drums", "bass", "fx"]
+    },
+    {
+      "name": "outro",
+      "label": "Outro",
+      "start_bar": 72,
+      "length_bars": 8,
+      "energy": 0.2,
+      "description": "Melody fades — clean ending",
+      "patterns": ["melody"]
+    }
+  ],
+  "youtube_notes": {
+    "target_duration_sec": [150, 200],
+    "first_drop_by_sec": 25,
+    "hook_in_first_sec": 5,
+    "energy_variation_sec": 18
+  }
+}
