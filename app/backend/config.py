@@ -22,9 +22,13 @@ if os.environ.get("FY3_DOCKER"):
     PYTHON = shutil.which("python3") or "python3"
     PYTHON_ML = PYTHON  # no separate ML venv in Docker
 else:
-    _venv = ROOT / ".venv" / "bin" / "python3.14"
-    PYTHON = str(_venv) if _venv.exists() else "python3"
+    _venv_python = Path("/opt/homebrew/opt/python@3.14/bin/python3.14")
+    _venv_fallback = ROOT / ".venv" / "bin" / "python3.14"
+    PYTHON = str(_venv_python) if _venv_python.exists() else (str(_venv_fallback) if _venv_fallback.exists() else "python3")
     PYTHON_ML = str(ROOT / ".venv_ml" / "bin" / "python")
+
+# Site-packages path for .venv (used as PYTHONPATH when spawning subprocesses)
+VENV_SITE_PACKAGES = str(ROOT / ".venv" / "lib" / "python3.14" / "site-packages")
 
 SUNO_API_BASE = "https://apibox.erweima.ai"
 STUDIO_DIR = ROOT / "studio"

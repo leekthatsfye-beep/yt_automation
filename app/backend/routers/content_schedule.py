@@ -74,6 +74,9 @@ async def get_plan(
     meta_dir = ROOT / "metadata"
     out_dir = ROOT / "output"
 
+    # Load social uploads log for shorts YouTube status
+    social_log = _load_json(ROOT / "social_uploads_log.json")
+
     if overrides:
         for idx_str, stem in overrides.items():
             idx = int(idx_str)
@@ -96,6 +99,15 @@ async def get_plan(
                 slot["title"] = make_beat_title(stem, artist)
             elif slot["type"] == "short":
                 slot["has_short_video"] = (out_dir / f"{stem}_9x16.mp4").exists()
+
+    # Annotate all short slots with YouTube upload status
+    for slot in plan.get("slots", []):
+        if slot.get("type") == "short" and slot.get("stem"):
+            stem = slot["stem"]
+            yt_short = social_log.get(stem, {}).get("youtube_shorts", {})
+            if yt_short.get("status") == "ok" and yt_short.get("videoId"):
+                slot["short_youtube_url"] = yt_short.get("url", f"https://youtube.com/shorts/{yt_short['videoId']}")
+                slot["short_youtube_id"] = yt_short["videoId"]
 
     return plan
 
@@ -352,6 +364,19 @@ async def clear_all_overrides(user: UserContext = Depends(require_admin)):
     log.pop("slot_overrides", None)
     SCHEDULE_LOG.write_text(json.dumps(log, indent=2, default=str))
     return {"status": "cleared"}
+
+
+@router.get("/channel-feed")
+async def get_channel_feed(
+    days_back: int = 3,
+    days_ahead: int = 7,
+    user: UserContext = Depends(require_admin),
+):
+    """Recent + upcoming YouTube uploads: past N days + next N days."""
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from content_scheduler import get_channel_feed
+    return {"feed": get_channel_feed(days_back=days_back, days_ahead=days_ahead)}
 
 
 @router.get("/available-beats")

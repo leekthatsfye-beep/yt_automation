@@ -661,8 +661,16 @@ async def _run_thumbnail(stems: list[str], params: dict[str, Any]) -> dict[str, 
 
 
 async def _run_airbit(stems: list[str], params: dict[str, Any]) -> dict[str, Any]:
-    """Upload to Airbit."""
-    return {"message": "Airbit upload runs via store sync", "stems": stems}
+    """Sync cover art thumbnails to Airbit for the given stems."""
+    only_arg = ",".join(stems) if stems else None
+    cmd = [PYTHON, str(ROOT / "sync_airbit_artwork.py")]
+    if only_arg:
+        cmd += ["--only", only_arg]
+    stdout, stderr, rc = await _run_subprocess(cmd, timeout=600)
+    if rc != 0:
+        raise RuntimeError(f"sync_airbit_artwork.py failed (rc={rc}): {stderr[-300:]}")
+    uploaded = stdout.count("✓  Uploaded")
+    return {"message": f"Airbit artwork synced: {uploaded} thumbnail(s) uploaded", "stems": stems}
 
 
 async def _run_beatstars(stems: list[str], params: dict[str, Any]) -> dict[str, Any]:

@@ -193,14 +193,14 @@ def _find_dual_partner(primary_artist: str) -> str | None:
 def _build_title_single(artist: str, beat_name: str) -> str:
     """Build title for a single-artist beat using lanes_config template."""
     templates = _lanes_cfg.get("title_template", {})
-    template = templates.get("single", '[FREE] {artist} Type Beat - "{beat_name}"')
+    template = templates.get("single", '{artist} Type Beat - "{beat_name}"')
     return template.format(artist=artist, beat_name=beat_name)
 
 
 def _build_title_dual(artist1: str, artist2: str, beat_name: str) -> str:
     """Build title for a dual-artist beat using lanes_config template."""
     templates = _lanes_cfg.get("title_template", {})
-    template = templates.get("dual", '[FREE] {artist1} x {artist2} Type Beat - "{beat_name}"')
+    template = templates.get("dual", '{artist1} x {artist2} Type Beat - "{beat_name}"')
     return template.format(artist1=artist1, artist2=artist2, beat_name=beat_name)
 
 
@@ -280,7 +280,18 @@ def _get_purchase_link(stem: str) -> str:
     """Look up the Airbit listing URL for a beat, fall back to store profile."""
     store_profile = _lanes_cfg.get("store_profile_url", "")
 
-    # Try to find a beat-specific store URL
+    # Priority 1: airbit_url in metadata JSON (air.bi short link captured at upload time)
+    try:
+        meta_path = META_DIR / f"{stem}.json"
+        if meta_path.exists():
+            _m = json.loads(meta_path.read_text())
+            airbit_url = _m.get("airbit_url", "")
+            if airbit_url:
+                return f"{airbit_url}\n\nBrowse all beats:\n{store_profile}" if store_profile else airbit_url
+    except Exception:
+        pass
+
+    # Priority 2: store_uploads_log.json (long Airbit store URL)
     try:
         if STORE_LOG.exists():
             store_data = json.loads(STORE_LOG.read_text())

@@ -23,12 +23,66 @@ import requests
 
 log = logging.getLogger(__name__)
 
-ROOT      = Path(__file__).resolve().parent
-OUT_DIR   = ROOT / "output"
-META_DIR  = ROOT / "metadata"
-BRAND_DIR = ROOT / "brand"
-STORE_LOG = ROOT / "store_uploads_log.json"
-LANES_CFG = ROOT / "lanes_config.json"
+ROOT        = Path(__file__).resolve().parent
+OUT_DIR     = ROOT / "output"
+META_DIR    = ROOT / "metadata"
+BRAND_DIR   = ROOT / "brand"
+IMAGES_DIR  = ROOT / "images"
+STORE_LOG   = ROOT / "store_uploads_log.json"
+LANES_CFG   = ROOT / "lanes_config.json"
+UPLOADS_LOG = ROOT / "uploads_log.json"
+
+# Artist folder names (must match images/ subdirectories exactly)
+_ARTIST_DIRS: dict[str, str] = {
+    "biggkutt8":    "BiggKutt8",
+    "ola runt":     "Ola Runt",
+    "sexyy red":    "Sexyy Red",
+    "sexyyred":     "Sexyy Red",
+    "glokk40spazz": "Glokk40Spazz",
+    "tezzus":       "Tezzus",
+    "diamond":      "Diamond",
+    "shawtyrokk":   "ShawtyRokk",
+}
+
+
+def _resolve_artist_clip(stem: str) -> Path | None:
+    """
+    Return the best video clip for this stem's artist.
+    Priority:
+      1. images/{stem}.mp4          — per-beat custom clip
+      2. images/{ArtistFolder}/*.mp4 — deterministic pick from artist folder
+         (uses stem hash so the same stem always gets the same clip)
+      3. None — no clip available
+    Never falls back to a generic default — always uses the actual artist.
+    """
+    import hashlib
+
+    per_beat = IMAGES_DIR / f"{stem}.mp4"
+    if per_beat.exists():
+        return per_beat
+
+    # Load artist from metadata
+    mf = META_DIR / f"{stem}.json"
+    if not mf.exists():
+        return None
+    meta = json.loads(mf.read_text())
+    artist = meta.get("seo_artist", meta.get("artist", "")).lower().strip()
+
+    folder_name = _ARTIST_DIRS.get(artist) or _ARTIST_DIRS.get(artist.replace(" ", ""))
+    if not folder_name:
+        return None
+
+    artist_dir = IMAGES_DIR / folder_name
+    if not artist_dir.is_dir():
+        return None
+
+    clips = sorted(artist_dir.glob("*.mp4"))
+    if not clips:
+        return None
+
+    # Deterministic selection — same stem always gets same clip
+    idx = int(hashlib.md5(stem.encode()).hexdigest(), 16) % len(clips)
+    return clips[idx]
 
 
 def _build_purchase_desc(stem: str) -> str:
@@ -90,6 +144,143 @@ def log_social_upload(stem: str, platform: str, result: dict):
     save_social_log(data)
 
 
+def _get_full_video_url(stem: str) -> str:
+    """Return the full YouTube video URL for a stem, or empty string if not uploaded yet."""
+    try:
+        if UPLOADS_LOG.exists():
+            data = json.loads(UPLOADS_LOG.read_text())
+            return data.get(stem, {}).get("url", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _build_short_desc(stem: str) -> str:
+    """
+    Build a clean YouTube Shorts description with:
+      - Beat title
+      - Purchase / lease link (beat-specific Airbit URL)
+      - Full YouTube video link (or placeholder if not uploaded yet)
+      - Producer tag
+      - Hashtags
+    """
+    # Load metadata for title
+    meta = {}
+    try:
+        meta_path = META_DIR / f"{stem}.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+    except Exception:
+        pass
+
+    title = meta.get("title", stem.replace("_", " ").title())
+
+    # Load store/lanes config
+    store_data = {}
+    lanes_cfg = {}
+    try:
+        if STORE_LOG.exists():
+            store_data = json.loads(STORE_LOG.read_text())
+    except Exception:
+        pass
+    try:
+        if LANES_CFG.exists():
+            lanes_cfg = json.loads(LANES_CFG.read_text())
+    except Exception:
+        pass
+
+    store_profile = lanes_cfg.get("store_profile_url", "")
+    producer      = lanes_cfg.get("producer", "leekthatsfy3")
+
+    entry       = store_data.get(stem, {})
+    airbit_entry = entry.get("airbit", entry) if isinstance(entry, dict) else {}
+    beat_url    = airbit_entry.get("url", "")
+
+    purchase_link = beat_url if beat_url else store_profile or "[Link in bio]"
+
+    # Full long-form video URL
+    full_video_url = _get_full_video_url(stem)
+    if full_video_url:
+        full_video_section = f"🎵 Full beat:\n{full_video_url}"
+    else:
+        full_video_section = "🎵 Full beat dropping soon — follow so you don't miss it"
+
+    # Hashtags from metadata tags (top 5 most relevant)
+    raw_tags = meta.get("tags", [])[:5]
+    hashtags = " ".join(
+        "#" + t.replace(" ", "").replace("-", "") for t in raw_tags if t
+    )
+    if not hashtags:
+        hashtags = "#TypeBeat #Shorts"
+    else:
+        hashtags = f"#Shorts #TypeBeat {hashtags}"
+
+    desc = (
+        f"{title}\n"
+        f"\n"
+        f"🛒 Purchase / Lease this beat:\n"
+        f"{purchase_link}\n"
+        f"\n"
+        f"{full_video_section}\n"
+        f"\n"
+        f"prod. {producer}\n"
+        f"\n"
+        f"{hashtags}"
+    )
+    return desc.strip()[:5000]
+
+
+def patch_short_description(stem: str, youtube=None) -> bool:
+    """
+    After a long-form video is uploaded, call this to update the YouTube Short's
+    description with the real full video link.
+
+    Called automatically by upload.py after each successful upload.
+    Returns True if updated, False if no short exists or update failed.
+    """
+    social_data = load_social_log()
+    short_entry = social_data.get(stem, {}).get("youtube_shorts", {})
+    video_id = short_entry.get("videoId", "")
+
+    if not video_id:
+        return False  # No short uploaded for this stem
+
+    full_url = _get_full_video_url(stem)
+    if not full_url:
+        return False  # Long-form not in log yet
+
+    try:
+        if youtube is None:
+            from upload import get_youtube_service
+            youtube = get_youtube_service()
+
+        # Fetch current snippet to preserve all fields
+        resp = youtube.videos().list(part="snippet", id=video_id).execute()
+        items = resp.get("items", [])
+        if not items:
+            log.warning("[PATCH] Short %s not found on YouTube (deleted?)", video_id)
+            return False
+
+        snippet = items[0]["snippet"]
+        new_desc = _build_short_desc(stem)
+
+        if full_url in snippet.get("description", ""):
+            log.info("[PATCH] Short %s already has full video link — skipping", stem)
+            return False
+
+        snippet["description"] = new_desc
+        youtube.videos().update(
+            part="snippet",
+            body={"id": video_id, "snippet": snippet},
+        ).execute()
+        log.info("[PATCH] Updated short description for %s with full video link", stem)
+        return True
+
+    except Exception as e:
+        log.warning("[PATCH] Failed to update short description for %s: %s", stem, e)
+        return False
+
+
 # ── Video conversion: landscape → portrait (9:16) ────────────────────────────
 
 # Platform duration limits (seconds).  IG is strictest → use as universal trim.
@@ -99,7 +290,7 @@ PLATFORM_MAX_DURATION = {
     "youtube_shorts": 180,
 }
 # Trim point — 1s buffer under IG limit for codec padding.
-SOCIAL_MAX_DURATION = 89
+SOCIAL_MAX_DURATION = 60
 
 # Always compress social videos for fast upload.  IG's resumable upload
 # silently rejects files > ~20 MB (returns ProcessingFailedError 400).
@@ -108,6 +299,83 @@ SOCIAL_TARGET_SIZE_MB = 50  # compress when portrait would exceed this size (MB)
 # Social platforms re-encode anyway, so quality loss from compression is negligible.
 # IG video_url approach (via main tunnel) has no size limit.
 # Resumable upload fallback has ~10 MB undocumented limit — video_url is primary.
+
+
+def find_808_drop(audio_path: Path, search_limit: float = 30.0) -> float:
+    """
+    Detect the first 808/bass drop in the audio and return its timestamp (seconds).
+
+    Strategy: STFT-based bass energy (30-150 Hz) to find where sub-bass first
+    sustains above threshold for a full bar — indicating the drop vs a quiet intro.
+
+    - If bass is strong from bar 1 (no quiet intro), returns 0.0
+    - If there's a quiet intro, returns the timestamp of the first sustained drop
+    - Falls back to 0.0 if detection fails
+
+    Only looks at first `search_limit` seconds to avoid mid-song breakdowns.
+    """
+    try:
+        import numpy as np
+        import librosa
+
+        hop = 512
+        y, sr = librosa.load(str(audio_path), sr=None, mono=True,
+                             offset=0.0, duration=search_limit)
+
+        # STFT-based bass energy (30-150 Hz band)
+        D = np.abs(librosa.stft(y, n_fft=2048, hop_length=hop))
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+        bass_mask = (freqs >= 30) & (freqs <= 150)
+        bass_energy = D[bass_mask, :].mean(axis=0)
+        times = librosa.frames_to_time(np.arange(len(bass_energy)), sr=sr, hop_length=hop)
+
+        if bass_energy.max() == 0:
+            log.info("[DROP] No bass energy found, starting at t=0")
+            return 0.0
+
+        # Normalize energy to 0-1
+        bass_norm = bass_energy / bass_energy.max()
+
+        # Smooth over ~0.25s window to reduce noise
+        smooth_frames = max(1, int(0.25 * sr / hop))
+        kernel = np.ones(smooth_frames) / smooth_frames
+        bass_smooth = np.convolve(bass_norm, kernel, mode='same')
+
+        # Threshold: 25% of peak = "bass is present"
+        THRESHOLD = 0.25
+        # Sustain requirement: bass above threshold for at least 1.5s continuously
+        SUSTAIN_FRAMES = int(1.5 * sr / hop)
+
+        # Check if bass is already sustained from the start
+        # If first 2s average is above threshold → no intro, start at 0
+        first_2s_frames = int(2.0 * sr / hop)
+        if bass_smooth[:first_2s_frames].mean() >= THRESHOLD:
+            log.info("[DROP] Bass present from start — short starts at t=0")
+            return 0.0
+
+        # Find first frame where bass sustains above threshold for SUSTAIN_FRAMES
+        above = bass_smooth >= THRESHOLD
+        count = 0
+        for i, val in enumerate(above):
+            if val:
+                count += 1
+                if count >= SUSTAIN_FRAMES:
+                    drop_frame = i - count + 1
+                    drop_t = max(0.0, float(times[drop_frame]))
+                    # Round to nearest beat boundary (0.1s granularity)
+                    drop_t = round(drop_t, 1)
+                    log.info("[DROP] First sustained 808 drop at %.2fs", drop_t)
+                    return drop_t
+            else:
+                count = 0
+
+        log.info("[DROP] No sustained bass cluster found, starting at t=0")
+        return 0.0
+
+    except Exception as exc:
+        log.warning("[DROP] Detection failed (%s), starting at t=0", exc)
+        return 0.0
+
 
 def _get_duration(path: Path) -> float:
     """Get media duration in seconds via ffprobe."""
@@ -122,26 +390,241 @@ def _get_duration(path: Path) -> float:
         return 0.0
 
 
+HOOK_FONT_PATH   = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+HOOK_FONT_SIZE   = 62    # px — readable on phone at arm's length
+HOOK_DURATION    = 3.5   # seconds the opening hook text is visible
+END_PROMPT_START = 3     # seconds before end to show the comment prompt
+HOOK_W, HOOK_H   = 1080, 1920  # must match portrait dimensions
+
+
+# Hook openers — rotates daily so returning viewers never see the same one twice
+_HOOK_TEMPLATES = [
+    "Bro who's going crazy on this? ↓",
+    "This beat needs a collab. DROP a name ↓",
+    "Tell me the rapper that turns this into a hit ↓",
+    "Be honest... who bodied a beat like this? ↓",
+    "POV: your favorite rapper just dropped this ↓",
+    "Which rapper do you immediately hear on this? ↓",
+    "This one got LEVELS. Who you putting on it? ↓",
+    "Nobody makes beats like this anymore ↓",
+    "The right rapper on this = instant hit. Who is it? ↓",
+    "I made this for one specific rapper. Guess who ↓",
+    "Whoever raps on this is going to the TOP ↓",
+    "This beat has been waiting for the right artist ↓",
+    "Stop scrolling. Who do you hear on this? ↓",
+    "This is going on somebody's album. Who? ↓",
+    "Name ONE rapper built for a beat like this ↓",
+    "If this don't make you think of a rapper idk what will ↓",
+    "Which artist would go stupid on this? ↓",
+    "This beat is TOO cold to be sitting like this ↓",
+    "A top artist needs to hear this. Tag em ↓",
+    "Streets been needing a beat like this. Who's on it? ↓",
+    "I already know exactly who fits this. Do you? ↓",
+    "This goes HARD. Who's the first rapper in your head? ↓",
+    "Somebody's bout to blow up off a beat like this ↓",
+    "Drop the name of whoever lives in your head rent free ↓",
+    "Tezzus x Diamond dropped different with this one ↓",
+    "If you know Tezzus you already know this goes hard ↓",
+    "Diamond on the beat = automatic vibe. Who's rapping? ↓",
+    "Tezzus x Diamond cooked this. Who finishes it? ↓",
+    "ShawtyRøkk type beat and it's already a problem ↓",
+    "If you know ShawtyRøkk you already know this is cold ↓",
+    "Krossed Ø Gang energy. Who's getting on this? ↓",
+    "ShawtyRøkk cooked this vibe. Who finishes it? ↓",
+]
+
+# End-of-video comment prompts — also rotates daily
+_END_PROMPTS = [
+    "You heard it first. Who's getting on this? ↓",
+    "Still waiting for the right rapper. Tag em ↓",
+    "This beat deserves bars. Who you got? ↓",
+    "Drop a name and I might send the lease ↓",
+    "Comment the artist and I'll tag them ↓",
+    "Who goes crazy over beats like this? ↓",
+    "Real ones know who needs this beat ↓",
+    "If this ain't a hit I don't know what is. Who's on it? ↓",
+    "The label should be calling RIGHT NOW. Who? ↓",
+    "One rapper. This beat. Instant classic. Name em ↓",
+    "I'm sending this to whoever you say ↓",
+    "Drop the artist you'd sign to this ↓",
+    "Lease or exclusive? Comment who you want on this ↓",
+    "Somebody in the comments always knows. Who is it? ↓",
+    "This beat won't be free forever. Who needs it? ↓",
+    "Comment and I'll personally send it to your pick ↓",
+    "The right collab on this = a million streams easy ↓",
+    "Who's sleeping on a beat like this? Wake em up ↓",
+    "Tag the rapper. I'll do the rest ↓",
+    "Drop the name. Let's make it happen ↓",
+    "Which rapper would go 0 to 100 on this? ↓",
+    "They need to hear this TODAY. Who? ↓",
+    "Somebody's next single sounds exactly like this ↓",
+    "The comments already know. Prove it ↓",
+]
+
+
+def _pick_hook(stem: str, templates: list) -> str:
+    """
+    Pick a hook that changes daily — same stem gets a different hook each day.
+    Uses stem hash + day-of-year so no two consecutive days repeat.
+    Guarantees all hooks cycle through before any repeats (round-robin per stem).
+    """
+    from datetime import date
+    day_of_year = date.today().timetuple().tm_yday
+    stem_hash   = sum(ord(c) for c in stem)
+    # Offset by day so each new day shifts the entire rotation
+    idx = (stem_hash + day_of_year) % len(templates)
+    return templates[idx]
+
+
+def _render_hook_overlay(stem: str, effective_duration: float, out_dir: Path) -> tuple[Path, Path]:
+    """
+    Render two PNG overlays using Pillow (fallback for ffmpeg builds without libfreetype):
+      • hook_open_{stem}.png  — opening hook text (white bold, black pill background)
+      • hook_end_{stem}.png   — end comment prompt (same style)
+    Returns (open_png_path, end_png_path).
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    W, H = HOOK_W, HOOK_H
+    font_size = HOOK_FONT_SIZE
+    try:
+        font = ImageFont.truetype(HOOK_FONT_PATH, font_size)
+    except OSError:
+        font = ImageFont.load_default()
+
+    # Use NotoColorEmoji for emoji rendering if available, fall back to Arial Bold
+    emoji_font_path = "/System/Library/Fonts/Apple Color Emoji.ttc"
+    try:
+        emoji_font = ImageFont.truetype(emoji_font_path, font_size)
+    except OSError:
+        emoji_font = font
+
+    def _wrap_text(text: str, max_width: int) -> list[str]:
+        """Split text into lines that fit within max_width pixels."""
+        words = text.split()
+        lines: list[str] = []
+        current = ""
+        dummy_img = Image.new("RGBA", (1, 1))
+        dummy_draw = ImageDraw.Draw(dummy_img)
+        for word in words:
+            test = (current + " " + word).strip()
+            bbox = dummy_draw.textbbox((0, 0), test, font=font)
+            if bbox[2] - bbox[0] <= max_width:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        return lines
+
+    MAX_TEXT_W = W - 80  # 40px margin each side
+
+    def _make_overlay(text: str, y_frac: float) -> Image.Image:
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))  # fully transparent
+        draw = ImageDraw.Draw(img)
+
+        # Strip emoji from main text, draw them separately using emoji font
+        # Simple approach: render full text with main font, emoji will show as boxes
+        # but we remove them and add the arrow as ASCII
+        clean_text = text.replace("👇", "↓").strip()  # replace emoji with renderable arrow
+
+        lines = _wrap_text(clean_text, MAX_TEXT_W)
+        line_height = font_size + 10
+        total_h = len(lines) * line_height
+        y_center = int(H * y_frac) - total_h // 2
+
+        # Measure widest line for background
+        max_tw = max(
+            (draw.textbbox((0, 0), ln, font=font)[2] -
+             draw.textbbox((0, 0), ln, font=font)[0])
+            for ln in lines
+        )
+
+        pad_x, pad_y = 28, 16
+        bg_x0 = (W - max_tw) // 2 - pad_x
+        bg_y0 = y_center - pad_y
+        bg_x1 = (W + max_tw) // 2 + pad_x
+        bg_y1 = y_center + total_h + pad_y
+        draw.rounded_rectangle([bg_x0, bg_y0, bg_x1, bg_y1], radius=18,
+                                fill=(0, 0, 0, 165))
+
+        for i, line in enumerate(lines):
+            bbox = draw.textbbox((0, 0), line, font=font)
+            tw = bbox[2] - bbox[0]
+            x = (W - tw) // 2
+            y = y_center + i * line_height
+            # Shadow
+            draw.text((x + 2, y + 2), line, font=font, fill=(0, 0, 0, 200))
+            # Main white text
+            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+        return img
+
+    open_text = _pick_hook(stem, _HOOK_TEMPLATES)
+    end_text  = _pick_hook(stem, _END_PROMPTS)
+
+    open_img = _make_overlay(open_text, y_frac=0.20)   # top-fifth of screen
+    end_img  = _make_overlay(end_text,  y_frac=0.80)   # bottom-fifth of screen
+
+    open_path = out_dir / f"_hook_open_{stem}.png"
+    end_path  = out_dir / f"_hook_end_{stem}.png"
+    open_img.save(str(open_path))
+    end_img.save(str(end_path))
+    return open_path, end_path
+
+
 def convert_to_portrait(
     stem: str,
     force: bool = False,
     progress_cb: "Callable[[float], None] | None" = None,
 ) -> Path:
     """
-    Convert a 1920x1080 landscape video to 1080x1920 portrait using
-    downscale/upscale blur + centered overlay.
+    Build a 1080x1920 portrait short directly from the artist's video clip
+    + the original beat audio. Never uses the full landscape render as source —
+    that avoids the still-image problem when zoompan was used.
 
-    Uses fast scale-down/up trick instead of boxblur for ~10x speedup.
-    Optionally reports real-time progress via progress_cb(pct: 0-100).
+    Video source priority:
+      1. images/{stem}.mp4         — per-beat custom clip
+      2. images/{ArtistFolder}/*.mp4 — artist clip (deterministic by stem hash)
+      3. output/{stem}.mp4         — full render fallback (last resort)
 
+    Adds two retention hooks burned into the video.
     Returns path to the 9:16 file: output/{stem}_9x16.mp4
     Idempotent: skips if output exists unless force=True.
     """
-    src = OUT_DIR / f"{stem}.mp4"
-    dst = OUT_DIR / f"{stem}_9x16.mp4"
+    shorts_dir = OUT_DIR / "renders" / "shorts"
+    shorts_dir.mkdir(parents=True, exist_ok=True)
+    dst = shorts_dir / f"{stem}_9x16.mp4"
 
-    if not src.exists():
-        raise FileNotFoundError(f"Source video not found: {src}")
+    # Resolve video clip source — prefer artist clip over full render
+    clip_src = _resolve_artist_clip(stem)
+    if clip_src is None:
+        # Fallback: use the renders folder or output root
+        clip_src = OUT_DIR / "renders" / f"{stem}.mp4"
+        if not clip_src.exists():
+            clip_src = OUT_DIR / f"{stem}.mp4"
+    if not clip_src.exists():
+        raise FileNotFoundError(f"No video source found for: {stem}")
+
+    # Always use the original beat audio for cleanest sound
+    beat_audio: Path | None = None
+    for ext in (".mp3", ".wav"):
+        # Check flat root first, then search subfolders
+        candidate = ROOT / "beats" / f"{stem}{ext}"
+        if candidate.exists():
+            beat_audio = candidate
+            break
+        matches = list((ROOT / "beats").rglob(f"{stem}{ext}"))
+        if matches:
+            beat_audio = matches[0]
+            break
+
+    log.info("[SHORT] %s — video: %s | audio: %s", stem, clip_src.name,
+             beat_audio.name if beat_audio else "from clip")
+
+    # For output duration calculation use beat audio length if available
+    src = OUT_DIR / f"{stem}.mp4"  # kept for duration reference only
 
     if dst.exists() and not force:
         log.info("[SKIP] 9x16 already exists: %s", dst.name)
@@ -154,31 +637,48 @@ def convert_to_portrait(
     BW, BH = W // 8, H // 8  # 135 × 240
     has_spin = SPIN_LOGO.exists()
 
-    # ── Trim + compress decisions ──────────────────────────────────────
-    src_duration = _get_duration(src)
-    src_size_mb = src.stat().st_size / (1024 * 1024)
+    # ── 808 drop detection — use beat audio for cleanest signal ────────
+    if beat_audio:
+        drop_ss = find_808_drop(beat_audio)
+    elif src.exists():
+        drop_ss = find_808_drop(src)
+    else:
+        drop_ss = 0.0
+    log.info("[DROP] Short will start at %.2fs (808 drop)", drop_ss)
+
+    # ── Duration from beat audio (or clip src as fallback) ─────────────
+    audio_ref = beat_audio or src
+    src_duration = _get_duration(audio_ref) if audio_ref.exists() else _get_duration(clip_src)
+    src_size_mb  = clip_src.stat().st_size / (1024 * 1024)
+
+    # Available content after the drop
+    available_duration = src_duration - drop_ss
 
     # Trim if over the social max (89s — safe for all platforms including IG)
-    needs_trim = src_duration > SOCIAL_MAX_DURATION
+    needs_trim = available_duration > SOCIAL_MAX_DURATION
     trim_to = SOCIAL_MAX_DURATION if needs_trim else 0
-    effective_duration = trim_to if needs_trim else src_duration
+    effective_duration = trim_to if needs_trim else available_duration
+
+    # ── Replay tension: cut 0.2s before the bar resolves ───────────────
+    EARLY_CUT = 0.2
+    if effective_duration > 5.0:
+        effective_duration = round(effective_duration - EARLY_CUT, 3)
+        if needs_trim:
+            trim_to = effective_duration
 
     # Compress if source is large
     needs_compress = src_size_mb > SOCIAL_TARGET_SIZE_MB
 
     log.info(
-        "Portrait prep: %.1fs (%.1f MB), trim=%s, compress=%s",
-        src_duration, src_size_mb,
+        "Portrait prep: %.1fs src, drop@%.2fs, effective=%.1fs (%.1f MB), trim=%s, compress=%s",
+        src_duration, drop_ss, effective_duration, src_size_mb,
         f"{trim_to}s" if needs_trim else "no",
         "yes" if needs_compress else "no",
     )
 
-    # Audio filter: fade-out if trimming, passthrough otherwise
+    # Audio fade-out: always apply to the last 3s for clean loop/replay tension
     fade_dur = 3
-    af_filter = (
-        f"afade=t=out:st={trim_to - fade_dur}:d={fade_dur}"
-        if needs_trim else ""
-    )
+    fade_start = max(0.0, effective_duration - fade_dur)
 
     # Pick encoding quality
     if needs_compress:
@@ -190,70 +690,96 @@ def convert_to_portrait(
         v_extra = []
         a_bitrate = "192k"
 
-    # Audio fade must go inside -filter_complex (can't mix -af with -filter_complex)
-    audio_chain = f"[0:a]{af_filter}[aout]" if af_filter else ""
+    # Render hook PNG overlays via Pillow (no libfreetype needed)
+    hook_open_png, hook_end_png = _render_hook_overlay(stem, effective_duration, OUT_DIR)
+    end_start = max(0.0, effective_duration - END_PROMPT_START)
+
+    def _hook_overlay_filters(base_idx: int, pre_label: str) -> tuple[str, list]:
+        oi, ei = base_idx, base_idx + 1
+        f1 = (f"[{pre_label}][{oi}:v]overlay=0:0:"
+              f"enable='between(t,0,{HOOK_DURATION})'[v1]")
+        f2 = (f"[v1][{ei}:v]overlay=0:0:"
+              f"enable='between(t,{end_start:.2f},{effective_duration:.2f})',"
+              f"format=yuv420p[out]")
+        return f"{f1};{f2}", ["-i", str(hook_open_png), "-i", str(hook_end_png)]
+
+    # -ss seek on video clip; audio always starts from drop_ss offset
+    ss_args = ["-ss", f"{drop_ss:.3f}"] if drop_ss > 0 else []
+    # For separate audio input: seek offset applied via -ss before audio -i
+    audio_ss_args = ["-ss", f"{drop_ss:.3f}"] if (drop_ss > 0 and beat_audio) else []
+
+    # Input index accounting:
+    # [0] = video clip_src  (with -ss seek OR -stream_loop -1)
+    # [1] = beat_audio      (separate audio, only if beat_audio exists)
+    # [1 or 2] = SPIN_LOGO  (if has_spin)
+    # hook PNGs after that
+
+    if beat_audio:
+        # Separate video + audio inputs — cleanest approach
+        audio_input_args = [*audio_ss_args, "-i", str(beat_audio)]
+        audio_idx = 1
+        spin_idx  = 2
+    else:
+        # Audio comes from the clip itself
+        audio_input_args = []
+        audio_idx = 0
+        spin_idx  = 1
+
+    af_filter    = f"afade=t=out:st={fade_start:.3f}:d={fade_dur}"
+    audio_label  = f"{audio_idx}:a"
+    audio_chain  = f"[{audio_label}]{af_filter}[aout]"
+    audio_map    = "[aout]"
+
+    bg_filter = (
+        f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+        f"crop={W}:{H},scale={BW}:{BH},scale={W}:{H},"
+        f"format=yuv420p[bg]"
+    )
+    fg_filter = f"[0:v]scale={W}:-2,format=yuv420p[fg]"
+    ov_filter = "[bg][fg]overlay=(W-w)/2:(H-h)/2[composed]"
 
     if has_spin:
-        bg_filter = (
-            f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-            f"crop={W}:{H},scale={BW}:{BH},scale={W}:{H},"
-            f"format=yuv420p[bg]"
-        )
-        fg_filter = f"[0:v]scale={W}:-2,format=yuva420p[fg]"
-        ov_filter = "[bg][fg]overlay=(W-w)/2:(H-h)/2[comp]"
-        spin_filter = "[comp][1:v]overlay=(W-w)/2:H-h-20,format=yuv420p[out]"
-        vf = f"{bg_filter};{fg_filter};{ov_filter};{spin_filter}"
-        if audio_chain:
-            vf = f"{vf};{audio_chain}"
-        audio_map = "[aout]" if af_filter else "0:a:0"
+        spin_filter = f"[composed][{spin_idx}:v]overlay=(W-w)/2:H-h-20,format=yuv420p[spun]"
+        hook_chain, hook_inputs = _hook_overlay_filters(base_idx=spin_idx + 1, pre_label="spun")
+        vf = f"{bg_filter};{fg_filter};{ov_filter};{spin_filter};{hook_chain};{audio_chain}"
         cmd = [
             "ffmpeg", "-y",
-            "-i", str(src),
+            "-stream_loop", "-1", *ss_args, "-i", str(clip_src),
+            *audio_input_args,
             "-stream_loop", "-1", "-i", str(SPIN_LOGO),
+            *hook_inputs,
             "-filter_complex", vf,
             "-map", "[out]", "-map", audio_map,
             "-r", "30",
             "-c:v", "libx264", "-preset", v_preset, "-crf", v_crf,
-            *v_extra,
-            "-threads", "0",
+            *v_extra, "-threads", "0",
             "-c:a", "aac", "-b:a", a_bitrate,
             "-movflags", "+faststart",
             "-shortest",
         ]
     else:
-        bg_filter = (
-            f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-            f"crop={W}:{H},scale={BW}:{BH},scale={W}:{H},"
-            f"format=yuv420p[bg]"
-        )
-        fg_filter = f"[0:v]scale={W}:-2,format=yuv420p[fg]"
-        ov_filter = "[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[out]"
-        vf = f"{bg_filter};{fg_filter};{ov_filter}"
-        if audio_chain:
-            vf = f"{vf};{audio_chain}"
-        audio_map = "[aout]" if af_filter else "0:a:0"
+        hook_chain, hook_inputs = _hook_overlay_filters(base_idx=spin_idx, pre_label="composed")
+        vf = f"{bg_filter};{fg_filter};{ov_filter};{hook_chain};{audio_chain}"
         cmd = [
             "ffmpeg", "-y",
-            "-i", str(src),
+            "-stream_loop", "-1", *ss_args, "-i", str(clip_src),
+            *audio_input_args,
+            *hook_inputs,
             "-filter_complex", vf,
             "-map", "[out]", "-map", audio_map,
             "-r", "30",
             "-c:v", "libx264", "-preset", v_preset, "-crf", v_crf,
-            *v_extra,
-            "-threads", "0",
+            *v_extra, "-threads", "0",
             "-c:a", "aac", "-b:a", a_bitrate,
             "-movflags", "+faststart",
+            "-shortest",
         ]
 
-    # Trim to social max duration
-    if needs_trim:
-        cmd.extend(["-t", str(trim_to)])
-
-    # Add progress reporting and output path
+    cmd.extend(["-t", f"{effective_duration:.3f}"])
     cmd.extend(["-progress", "pipe:1", str(dst)])
 
-    log.info("Converting to portrait: %s → %s", src.name, dst.name)
-    duration = _get_duration(src)
+    log.info("Converting to portrait: %s → %s", clip_src.name, dst.name)
+    duration = _get_duration(audio_ref) if audio_ref.exists() else _get_duration(clip_src)
 
     # Write stderr to a temp file to avoid deadlock:
     # ffmpeg writes heavily to stderr; if it fills the pipe buffer (~64 KB)
@@ -323,6 +849,13 @@ def convert_to_portrait(
         if dst.exists():
             dst.unlink()
         raise
+
+    # Clean up temp hook PNG overlays
+    for _p in (hook_open_png, hook_end_png):
+        try:
+            _p.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     if progress_cb:
         progress_cb(100.0)
@@ -640,12 +1173,16 @@ def youtube_shorts_upload(
     stem: str,
     privacy: str = "public",
     progress: dict | None = None,
+    publish_at=None,  # datetime | None — if set, schedules Short (overrides privacy → private)
 ) -> dict:
     """
     Upload a portrait (9:16) video as a YouTube Short.
 
     Expects output/{stem}_9x16.mp4 to already exist (bot converts beforehand).
     Duration must be ≤180s for Shorts eligibility (YouTube allows up to 3 min since Oct 2024).
+
+    publish_at (optional): datetime with tzinfo — schedules the Short for that time.
+        When set, privacyStatus is forced to "private" (YouTube requirement).
 
     progress (optional): mutable dict for live status updates, keys:
         phase   — "init" | "uploading" | "thumbnail" | "done" | "failed"
@@ -688,11 +1225,8 @@ def youtube_shorts_upload(
     # Append #Shorts — YouTube uses this to classify as a Short
     yt_title = f"{raw_title} #Shorts".replace("<", "").replace(">", "").strip()[:100]
 
-    raw_desc = meta.get("description", "") or ""
-    # Auto-replace old description formats with real store link
-    if "AIRBIT_LINK_HERE" in raw_desc or "[Link in bio]" in raw_desc or "Listen freely" in raw_desc:
-        raw_desc = _build_purchase_desc(stem)
-    yt_desc = f"{raw_desc}\n\n#Shorts #TypeBeat".strip()[:5000]
+    # Build clean description: beat title + purchase link + full video link + hashtags
+    yt_desc = _build_short_desc(stem)
 
     yt_tags = meta.get("tags", []) or []
     # Sanitize tags (max 30 chars each, no angle brackets)
@@ -707,6 +1241,18 @@ def youtube_shorts_upload(
         progress.update(phase="failed", pct=0, detail="YouTube auth failed")
         return {"status": "error", "error": f"YouTube auth failed: {e}"}
 
+    # Scheduling: force private + publishAt (YouTube requirement)
+    effective_privacy = privacy if privacy in ("public", "unlisted", "private") else "public"
+    status_block: dict = {
+        "privacyStatus": "private" if publish_at else effective_privacy,
+        "selfDeclaredMadeForKids": False,
+    }
+    if publish_at:
+        from datetime import timezone as _tz
+        if publish_at.tzinfo is None:
+            publish_at = publish_at.replace(tzinfo=_tz.utc)
+        status_block["publishAt"] = publish_at.isoformat()
+
     body = {
         "snippet": {
             "title": yt_title,
@@ -714,10 +1260,7 @@ def youtube_shorts_upload(
             "tags": yt_tags,
             "categoryId": SHORTS_CATEGORY_MUSIC,
         },
-        "status": {
-            "privacyStatus": privacy if privacy in ("public", "unlisted", "private") else "public",
-            "selfDeclaredMadeForKids": False,
-        },
+        "status": status_block,
     }
 
     media = MediaFileUpload(

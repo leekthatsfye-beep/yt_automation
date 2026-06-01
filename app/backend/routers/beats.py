@@ -11,11 +11,12 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.backend.config import PYTHON, ROOT
 from app.backend.deps import get_current_user, UserContext, get_user_paths
 from app.backend.services.beat_svc import list_beats, get_beat, safe_stem, analyze_beat
+from app.backend.services import jobs_svc
 from app.backend.services.thumbnail_ai_svc import (
     generate_thumbnail_image,
     generate_preview_grid,
@@ -31,11 +32,23 @@ router = APIRouter(prefix="/api/beats", tags=["beats"])
 
 
 class MetadataUpdate(BaseModel):
-    title: str | None = None
-    beat_name: str | None = None
-    description: str | None = None
+    title: str | None = Field(None, max_length=200)
+    beat_name: str | None = Field(None, max_length=200)
+    description: str | None = Field(None, max_length=5000)
     tags: list[str] | None = None
-    artist: str | None = None
+    artist: str | None = Field(None, max_length=100)
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, v):
+        if v is None:
+            return v
+        if len(v) > 50:
+            raise ValueError("Too many tags (max 50)")
+        for tag in v:
+            if len(tag) > 100:
+                raise ValueError("Tag too long (max 100 chars)")
+        return v
 
 
 class ThumbnailGenRequest(BaseModel):
@@ -79,21 +92,31 @@ async def upload_beat(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    ext = Path(file.filename).suffix.lower()
+    # Sanitize filename — strip any path components, keep only the bare name
+    safe_name = Path(file.filename).name
+    # Allow only alphanumeric, spaces, dashes, underscores, dots
+    import re as _re
+    safe_name = _re.sub(r"[^\w\s\-.]", "", safe_name).strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    ext = Path(safe_name).suffix.lower()
     if ext not in (".mp3", ".wav"):
         raise HTTPException(status_code=400, detail="Only .mp3 and .wav files are accepted")
 
     paths = get_user_paths(user)
 
-    # Save uploaded file
+    # Save uploaded file — verify final path stays inside beats_dir
     paths.beats_dir.mkdir(parents=True, exist_ok=True)
-    dest = paths.beats_dir / file.filename
+    dest = (paths.beats_dir / safe_name).resolve()
+    if not str(dest).startswith(str(paths.beats_dir.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     with open(dest, "wb") as f:
         content = await file.read()
         f.write(content)
 
     # Generate metadata stub
-    stem = safe_stem(file.filename)
+    stem = safe_stem(safe_name)
     paths.metadata_dir.mkdir(parents=True, exist_ok=True)
     meta_path = paths.metadata_dir / f"{stem}.json"
 
@@ -108,6 +131,17 @@ async def upload_beat(
             json.dump(meta, f, indent=2)
 
     logger.info("Uploaded beat: %s -> stem=%s (user=%s)", file.filename, stem, user.username)
+
+    # Auto-pipeline: seo → render → airbit artwork (fire and forget)
+    try:
+        jobs_svc.add_pipeline_jobs(
+            steps=["seo", "render", "airbit"],
+            stems=[stem],
+        )
+        logger.info("Auto-pipeline queued for stem=%s", stem)
+    except Exception as exc:
+        logger.warning("Failed to queue auto-pipeline for %s: %s", stem, exc)
+
     return {
         "stem": stem,
         "filename": file.filename,
@@ -135,7 +169,7 @@ async def generate_all_seo(user: UserContext = Depends(get_current_user)):
         logger.error("seo_metadata.py (all) failed: %s", stderr_text)
         raise HTTPException(
             status_code=500,
-            detail=f"Bulk SEO generation failed: {stderr_text[:500]}",
+            detail="Bulk SEO generation failed. Check server logs.",
         )
 
     lines = stdout_text.strip().split("\n") if stdout_text.strip() else []
@@ -510,7 +544,7 @@ async def generate_seo(stem: str, user: UserContext = Depends(get_current_user))
         logger.error("seo_metadata.py failed for %s: %s", stem, stderr_text)
         raise HTTPException(
             status_code=500,
-            detail=f"SEO generation failed: {stderr_text[:500]}",
+            detail="SEO generation failed. Check server logs.",
         )
 
     meta_path = paths.metadata_dir / f"{stem}.json"

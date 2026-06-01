@@ -79,7 +79,7 @@ async def upload_media(
     try:
         content = await file.read()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
+        raise HTTPException(status_code=400, detail="Failed to read file.")
 
     try:
         result = await media_svc.save_upload(
@@ -92,7 +92,7 @@ async def upload_media(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Upload failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Upload failed.")
 
     return result
 

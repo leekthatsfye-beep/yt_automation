@@ -165,7 +165,7 @@ async def generate_seo(stem: str, user: UserContext = Depends(get_current_user))
         logger.error("seo_metadata.py failed for %s: %s", stem, stderr_text)
         raise HTTPException(
             status_code=500,
-            detail=f"SEO generation failed: {stderr_text[:500]}",
+            detail="SEO generation failed. Check server logs.",
         )
 
     meta_path = paths.metadata_dir / f"{stem}.json"
@@ -211,7 +211,7 @@ async def generate_all_seo(user: UserContext = Depends(get_current_user)):
         logger.error("seo_metadata.py (all) failed: %s", stderr_text)
         raise HTTPException(
             status_code=500,
-            detail=f"Bulk SEO generation failed: {stderr_text[:500]}",
+            detail="Bulk SEO generation failed. Check server logs.",
         )
 
     lines = stdout_text.strip().split("\n") if stdout_text.strip() else []

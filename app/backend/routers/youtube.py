@@ -13,7 +13,15 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.backend.config import PYTHON, ROOT
+import os
+from app.backend.config import PYTHON, ROOT, VENV_SITE_PACKAGES
+
+def _subprocess_env() -> dict:
+    """Return an env dict that injects .venv site-packages into PYTHONPATH."""
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{VENV_SITE_PACKAGES}:{existing}" if existing else VENV_SITE_PACKAGES
+    return env
 from app.backend.deps import get_current_user, UserContext, get_user_paths
 from app.backend.services.beat_svc import get_beat
 from app.backend.ws import manager, tracker
@@ -82,6 +90,7 @@ async def upload_beat(stem: str, req: UploadRequest, user: UserContext = Depends
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(ROOT),
+        env=_subprocess_env(),
     )
 
     pct = 10
@@ -117,7 +126,7 @@ async def upload_beat(stem: str, req: UploadRequest, user: UserContext = Depends
         await manager.send_progress(task_id, "upload", pct, f"Error: {stderr_text[:200]}", username=user.username)
         raise HTTPException(
             status_code=500,
-            detail=f"Upload failed: {stderr_text[:500]}",
+            detail="Upload failed. Check server logs.",
         )
 
     tracker.complete(task_id)
@@ -141,6 +150,75 @@ async def upload_beat(stem: str, req: UploadRequest, user: UserContext = Depends
         "publishAt": upload_info.get("publishAt"),
         "message": f"Successfully uploaded {stem}",
     }
+
+
+@router.get("/upload-preview/{stem}")
+async def upload_preview(stem: str, user: UserContext = Depends(get_current_user)):
+    """
+    Return preview metadata for a beat before uploading.
+    Reads metadata JSON and checks render/upload status.
+    """
+    paths = get_user_paths(user)
+    beat = get_beat(
+        stem,
+        beats_dir=paths.beats_dir,
+        metadata_dir=paths.metadata_dir,
+        output_dir=paths.output_dir,
+        uploads_log_path=paths.uploads_log,
+        social_log_path=paths.social_log,
+    )
+    if beat is None:
+        raise HTTPException(status_code=404, detail=f"Beat '{stem}' not found")
+
+    return {
+        "stem": stem,
+        "title": beat.get("title", stem),
+        "artist": beat.get("artist", ""),
+        "bpm": beat.get("bpm"),
+        "key": beat.get("key"),
+        "already_uploaded": bool(beat.get("uploaded")),
+        "rendered": bool(beat.get("rendered")),
+        "has_thumbnail": (paths.output_dir / f"{stem}_thumb.jpg").exists(),
+        "thumb_url": f"/files/output/{stem}_thumb.jpg",
+        "video_url": f"/files/output/{stem}.mp4",
+    }
+
+
+@router.post("/rebump/{stem}")
+async def rebump_beat(stem: str, user: UserContext = Depends(get_current_user)):
+    """
+    Bump an already-uploaded beat to a new stem (e.g. starvin → starvin_v2)
+    by running rebump.py --only {stem}. Returns the new stem.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        PYTHON,
+        str(ROOT / "rebump.py"),
+        "--only", stem,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(ROOT),
+        env=_subprocess_env(),
+    )
+    stdout, stderr = await proc.communicate()
+    output = stdout.decode(errors="replace")
+
+    if proc.returncode != 0:
+        logger.error("rebump.py failed for %s: %s", stem, stderr.decode(errors="replace"))
+        raise HTTPException(status_code=500, detail="Rebump failed. Check server logs.")
+
+    # Parse new_stem from output line like "  starvin  →  starvin_v2"
+    new_stem = None
+    for line in output.splitlines():
+        if "→" in line:
+            parts = line.split("→")
+            if len(parts) == 2:
+                new_stem = parts[1].strip()
+                break
+
+    if not new_stem:
+        raise HTTPException(status_code=500, detail="Could not determine new stem from rebump output")
+
+    return {"old_stem": stem, "new_stem": new_stem, "output": output}
 
 
 @router.get("/uploads")

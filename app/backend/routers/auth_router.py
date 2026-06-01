@@ -4,8 +4,10 @@ Auth router — login, user info, and admin user management.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, field_validator
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.backend.auth import (
     authenticate,
@@ -19,6 +21,9 @@ from app.backend.deps import get_current_user, require_admin, UserContext
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+# Shared limiter — same instance as main.py via app.state
+_limiter = Limiter(key_func=get_remote_address)
+
 
 # ── models ──────────────────────────────────────────────────────────────
 
@@ -27,23 +32,71 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+    @field_validator("username")
+    @classmethod
+    def username_clean(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v or len(v) > 64:
+            raise ValueError("Invalid username")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def password_not_empty(cls, v: str) -> str:
+        if not v or len(v) > 256:
+            raise ValueError("Invalid password")
+        return v
+
 
 class CreateUserRequest(BaseModel):
     username: str
     password: str
     display_name: str = ""
 
+    @field_validator("username")
+    @classmethod
+    def username_valid(cls, v: str) -> str:
+        import re
+        v = v.strip().lower()
+        if not re.match(r'^[a-z0-9_]{3,32}$', v):
+            raise ValueError("Username must be 3-32 chars, letters/numbers/underscores only")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def password_strong(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if len(v) > 256:
+            raise ValueError("Password too long")
+        return v
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_clean(cls, v: str) -> str:
+        return v.strip()[:64]
+
 
 class ChangePasswordRequest(BaseModel):
     password: str
+
+    @field_validator("password")
+    @classmethod
+    def password_strong(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if len(v) > 256:
+            raise ValueError("Password too long")
+        return v
 
 
 # ── endpoints ───────────────────────────────────────────────────────────
 
 
 @router.post("/login")
-async def login(req: LoginRequest):
-    """Authenticate and return JWT token."""
+@_limiter.limit("10/minute")
+async def login(request: Request, req: LoginRequest):
+    """Authenticate and return JWT token. Rate-limited to 10 attempts/minute per IP."""
     user = authenticate(req.username, req.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")

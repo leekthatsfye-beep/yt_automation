@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import time
 from pathlib import Path
@@ -34,11 +35,17 @@ TOKEN_EXPIRE_HOURS = 72  # 3 days
 
 
 def _get_secret() -> str:
-    """Load or auto-generate JWT signing secret."""
+    """Load or auto-generate JWT signing secret. Env var takes priority."""
+    env_secret = os.environ.get("FY3_JWT_SECRET", "").strip()
+    if env_secret:
+        return env_secret
     if JWT_SECRET_FILE.exists():
+        # Tighten permissions on every read in case they were too loose
+        os.chmod(JWT_SECRET_FILE, 0o600)
         return JWT_SECRET_FILE.read_text().strip()
     secret = secrets.token_hex(32)
     JWT_SECRET_FILE.write_text(secret)
+    os.chmod(JWT_SECRET_FILE, 0o600)  # owner read/write only
     logger.info("Generated new JWT secret at %s", JWT_SECRET_FILE)
     return secret
 

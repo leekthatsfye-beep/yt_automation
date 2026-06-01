@@ -50,11 +50,14 @@ interface PlanSlot {
   time: string;
   type: "beat" | "short";
   lane: string;
+  source_lane?: string;
   label: string;
   stem: string | null;
   artist: string;
   title: string | null;
   has_short_video?: boolean;
+  short_youtube_url?: string;
+  short_youtube_id?: string;
   status: string;
   override?: boolean;
   execution?: string;
@@ -70,6 +73,10 @@ interface YouTubeScheduled {
   videoId: string;
   publishAt: string;
   lane: string;
+  is_live?: boolean;
+  date?: string;
+  date_label?: string;
+  content_type?: "beat" | "short";
 }
 
 interface PlanData {
@@ -233,6 +240,9 @@ export default function SchedulerPage() {
   const planUrl = `/content-schedule/plan?date=${selectedDate}`;
   const { data: plan, loading: planLoading, refetch: refetchPlan } =
     useFetch<PlanData>(planUrl);
+  const { data: feedData, refetch: refetchFeed } =
+    useFetch<{ feed: YouTubeScheduled[] }>("/content-schedule/channel-feed?days_back=3&days_ahead=7");
+  const channelFeed = feedData?.feed ?? [];
   const { toast } = useToast();
 
   const [executing, setExecuting] = useState(false);
@@ -543,7 +553,7 @@ export default function SchedulerPage() {
 
         <div className="grid grid-cols-3 gap-2 md:flex md:items-center md:justify-end md:gap-2 md:mt-[-40px]">
           <button
-            onClick={() => { refetchStatus(); refetchPlan(); }}
+            onClick={() => { refetchStatus(); refetchPlan(); refetchFeed(); }}
             className="px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
             style={{ background: "var(--bg-hover)", border: "1px solid var(--border)" }}
           >
@@ -815,78 +825,62 @@ export default function SchedulerPage() {
                   </button>
                 </div>
 
-                {/* YouTube Scheduled Uploads for this date */}
+                {/* YouTube Scheduled for selected date */}
                 {plan?.youtube_scheduled && plan.youtube_scheduled.length > 0 && (
                   <div className="mb-4">
                     <div className="flex items-center gap-2 mb-2">
                       <Youtube size={14} style={{ color: "#ff0000" }} />
-                      <p className="text-xs font-bold text-foreground">
-                        YouTube Scheduled
-                      </p>
-                      <span
-                        className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                        style={{ background: "#ff000015", color: "#ff0000" }}
-                      >
+                      <p className="text-xs font-bold text-foreground">Posting Today</p>
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                        style={{ background: "#ff000015", color: "#ff0000" }}>
                         {plan.youtube_scheduled.length} video{plan.youtube_scheduled.length !== 1 ? "s" : ""}
                       </span>
                     </div>
                     <div className="space-y-1">
                       {plan.youtube_scheduled.map((yt) => {
-                        const laneColor = "#ff0000";  // always red for YT scheduled section
+                        const isLive = yt.publishAt ? new Date(yt.publishAt) <= new Date() : false;
+                        const laneColor = LANE_COLORS[yt.lane] || "#6b7280";
                         return (
-                          <div
-                            key={yt.videoId}
+                          <div key={yt.videoId}
                             className="flex items-center gap-2 md:gap-3 p-2.5 rounded-xl"
                             style={{
-                              background: `${laneColor}08`,
-                              border: `1px solid ${laneColor}18`,
+                              background: isLive ? "var(--bg-primary)" : "#ff000008",
+                              border: isLive ? "1px solid var(--border)" : "1px solid #ff000018",
                             }}
                           >
                             <span className="text-[10px] font-mono font-bold text-text-secondary w-[52px] flex-shrink-0">
                               {yt.time_est}
                             </span>
-                            <div
-                              className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-                              style={{ background: `${laneColor}15` }}
-                            >
+                            <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                              style={{ background: `${laneColor}15` }}>
                               <Youtube size={13} style={{ color: laneColor }} />
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-1.5">
-                                <p className="text-xs font-semibold text-foreground truncate">
-                                  {yt.title}
-                                </p>
+                                <p className="text-xs font-semibold text-foreground truncate">{yt.title}</p>
                                 {yt.lane && (
-                                  <span
-                                    className="text-[7px] font-bold px-1 py-0.5 rounded uppercase tracking-wide flex-shrink-0"
-                                    style={{ background: `${laneColor}15`, color: laneColor }}
-                                  >
+                                  <span className="text-[7px] font-bold px-1 py-0.5 rounded uppercase tracking-wide flex-shrink-0"
+                                    style={{ background: `${laneColor}15`, color: laneColor }}>
                                     {yt.lane}
                                   </span>
                                 )}
                               </div>
-                              <p className="text-[10px] text-text-tertiary truncate">
-                                {yt.stem.replace(/_/g, " ")}
-                              </p>
+                              <p className="text-[10px] text-text-tertiary truncate">{yt.stem.replace(/_/g, " ")}</p>
                             </div>
                             {yt.url && (
-                              <a
-                                href={yt.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="p-1.5 rounded-lg flex-shrink-0 transition-colors"
+                              <a href={yt.url} target="_blank" rel="noopener noreferrer"
+                                className="p-1.5 rounded-lg flex-shrink-0"
                                 style={{ color: "var(--text-tertiary)" }}
-                                title="View on YouTube"
-                                onClick={(e) => e.stopPropagation()}
-                              >
+                                onClick={(e) => e.stopPropagation()}>
                                 <ExternalLink size={12} />
                               </a>
                             )}
-                            <span
-                              className="text-[8px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0"
-                              style={{ background: "#ff000012", color: "#ff0000" }}
-                            >
-                              Scheduled
+                            <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0"
+                              style={isLive
+                                ? { background: "#22c55e15", color: "#22c55e" }
+                                : { background: "#f59e0b15", color: "#f59e0b" }
+                              }>
+                              {isLive ? "Live" : "Scheduled"}
                             </span>
                           </div>
                         );
@@ -907,6 +901,11 @@ export default function SchedulerPage() {
                       const isPickerOpen = pickerSlot === i;
                       const isOverride = !!(slot as PlanSlot & { override?: boolean }).override;
 
+                      // source_lane = actual artist cluster; lane = time-of-day slot
+                      const sourceLane = slot.source_lane || slot.lane;
+                      const sourceLaneColor = LANE_COLORS[sourceLane] || "#6b7280";
+                      const slotMoved = slot.source_lane && slot.source_lane !== slot.lane;
+
                       return (
                         <div key={i}>
                           {/* Slot Row */}
@@ -922,24 +921,37 @@ export default function SchedulerPage() {
                             </span>
                             <div
                               className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-                              style={{ background: `${laneColor}15` }}
+                              style={{ background: `${sourceLaneColor}15` }}
                             >
                               {isBeat ? (
-                                <Music size={13} style={{ color: laneColor }} />
+                                <Music size={13} style={{ color: sourceLaneColor }} />
                               ) : (
-                                <Smartphone size={13} style={{ color: laneColor }} />
+                                <Smartphone size={13} style={{ color: sourceLaneColor }} />
                               )}
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-1.5">
+                                {/* Type pill — distinguishes Beat from Short */}
+                                <span
+                                  className="text-[7px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest flex-shrink-0"
+                                  style={isBeat
+                                    ? { background: "#3b82f615", color: "#3b82f6" }
+                                    : { background: "#ec489915", color: "#ec4899" }
+                                  }
+                                >
+                                  {isBeat ? "Beat" : "Short"}
+                                </span>
                                 <p className="text-xs font-semibold text-foreground truncate">
                                   {slot.label}
                                 </p>
+                                {/* Show the actual artist cluster lane, with time-slot indicator if moved */}
                                 <span
                                   className="text-[7px] font-bold px-1 py-0.5 rounded uppercase tracking-wide flex-shrink-0"
-                                  style={{ background: `${laneColor}15`, color: laneColor }}
+                                  style={{ background: `${sourceLaneColor}15`, color: sourceLaneColor }}
+                                  title={slotMoved ? `${sourceLane} artist in ${slot.lane} time slot` : undefined}
                                 >
-                                  {slot.lane}
+                                  {sourceLane}
+                                  {slotMoved && <span style={{ opacity: 0.6 }}> @{slot.lane[0]}</span>}
                                 </span>
                                 {isOverride && (
                                   <Pin size={9} style={{ color: "#8b5cf6" }} className="flex-shrink-0" />
@@ -958,7 +970,7 @@ export default function SchedulerPage() {
 
                             {/* Status + Change button */}
                             <div className="flex items-center gap-1.5 flex-shrink-0">
-                              {slot.status === "planned" && slot.stem ? (
+                              {slot.status === "planned" && slot.stem && isBeat ? (
                                 <span className="text-[9px] font-bold px-2 py-0.5 rounded-full hidden md:inline-block"
                                   style={{ background: "#22c55e15", color: "#22c55e" }}>
                                   Ready
@@ -970,12 +982,40 @@ export default function SchedulerPage() {
                                 </span>
                               ) : null}
 
+                              {/* Short status: posted to YT > file ready > needs generation */}
                               {slot.type === "short" && slot.stem && (
-                                <div className="flex-shrink-0">
-                                  {slot.has_short_video ? (
-                                    <CheckCircle2 size={13} style={{ color: "#22c55e" }} />
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  {slot.short_youtube_url ? (
+                                    <a
+                                      href={slot.short_youtube_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold"
+                                      style={{ background: "#ff000015", color: "#ff0000" }}
+                                      title="View Short on YouTube"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <Youtube size={9} />
+                                      Posted
+                                    </a>
+                                  ) : slot.has_short_video ? (
+                                    <span
+                                      className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold"
+                                      style={{ background: "#22c55e15", color: "#22c55e" }}
+                                      title="9:16 file ready, not yet uploaded"
+                                    >
+                                      <CheckCircle2 size={9} />
+                                      Ready
+                                    </span>
                                   ) : (
-                                    <AlertTriangle size={13} style={{ color: "#f59e0b" }} />
+                                    <span
+                                      className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold"
+                                      style={{ background: "#f59e0b15", color: "#f59e0b" }}
+                                      title="No 9:16 file yet"
+                                    >
+                                      <AlertTriangle size={9} />
+                                      Needs clip
+                                    </span>
                                   )}
                                 </div>
                               )}
@@ -1557,6 +1597,94 @@ export default function SchedulerPage() {
                   )}
                 </div>
               )}
+
+              {/* Channel Feed — past 3 days + next 7 days */}
+              {channelFeed.length > 0 && (() => {
+                const groups: Record<string, YouTubeScheduled[]> = {};
+                for (const yt of channelFeed) {
+                  const key = yt.date_label ?? yt.date ?? "Unknown";
+                  if (!groups[key]) groups[key] = [];
+                  groups[key].push(yt);
+                }
+                const liveCount = channelFeed.filter(y => y.is_live).length;
+                const schedCount = channelFeed.filter(y => !y.is_live).length;
+                return (
+                  <div className="p-4 rounded-2xl"
+                    style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Youtube size={14} style={{ color: "#ff0000" }} />
+                      <h3 className="text-xs font-bold text-foreground">Channel Feed</h3>
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full ml-auto"
+                        style={{ background: "#22c55e15", color: "#22c55e" }}>
+                        {liveCount} live
+                      </span>
+                      {schedCount > 0 && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                          style={{ background: "#f59e0b15", color: "#f59e0b" }}>
+                          {schedCount} upcoming
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-3">
+                      {Object.entries(groups).map(([dateLabel, items]) => {
+                        const isToday = dateLabel === "Today";
+                        return (
+                          <div key={dateLabel}>
+                            <p className="text-[9px] font-black uppercase tracking-widest mb-1"
+                              style={{ color: isToday ? "#8b5cf6" : "var(--text-tertiary)" }}>
+                              {dateLabel}
+                            </p>
+                            <div className="space-y-0.5">
+                              {items.map((yt) => {
+                                const isLive = yt.is_live ?? (yt.publishAt ? new Date(yt.publishAt) <= new Date() : false);
+                                const isShort = yt.content_type === "short";
+                                const laneColor = LANE_COLORS[yt.lane] || "#6b7280";
+                                return (
+                                  <div key={yt.videoId}
+                                    className="flex items-center gap-1.5 p-1.5 rounded-lg"
+                                    style={{ background: isLive ? "var(--bg-primary)" : "#f59e0b08" }}>
+                                    {/* Beat/Short type dot */}
+                                    <div className="w-4 h-4 rounded flex items-center justify-center flex-shrink-0"
+                                      style={{ background: isShort ? "#ec489920" : `${laneColor}20` }}>
+                                      {isShort
+                                        ? <Smartphone size={9} style={{ color: "#ec4899" }} />
+                                        : <Music size={9} style={{ color: laneColor }} />
+                                      }
+                                    </div>
+                                    <span className="text-[9px] font-mono text-text-tertiary w-[40px] flex-shrink-0">
+                                      {yt.time_est}
+                                    </span>
+                                    <p className="text-[10px] font-medium text-foreground truncate flex-1">
+                                      {isShort ? yt.title.replace("Short: ", "") : yt.title}
+                                    </p>
+                                    {yt.lane && !isShort && (
+                                      <span className="text-[7px] font-bold px-1 py-0.5 rounded uppercase flex-shrink-0"
+                                        style={{ background: `${laneColor}15`, color: laneColor }}>
+                                        {yt.lane}
+                                      </span>
+                                    )}
+                                    {yt.url && (
+                                      <a href={yt.url} target="_blank" rel="noopener noreferrer"
+                                        className="flex-shrink-0" style={{ color: "var(--text-tertiary)" }}
+                                        onClick={(e) => e.stopPropagation()}>
+                                        <ExternalLink size={9} />
+                                      </a>
+                                    )}
+                                    <span className="text-[7px] flex-shrink-0"
+                                      style={isLive ? { color: "#22c55e" } : { color: "#f59e0b" }}>
+                                      {isLive ? "●" : "◎"}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </>

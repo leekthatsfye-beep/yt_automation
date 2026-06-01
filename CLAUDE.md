@@ -138,5 +138,45 @@ Scheduled uploads are always set to `privacyStatus=private` with `publishAt` —
 2. Run `python seo_metadata.py` to generate metadata (or create `metadata/{stem}.json` manually)
 3. Optionally add `images/{stem}.jpg` for a custom thumbnail background
 4. Optionally add `images/{stem}.mp4` for a per-beat visualizer clip
-5. Run `python render.py` to render
+5. Run `python render_lit.py` to render (render.py was deleted — use render_lit.py now)
 6. Run `python upload.py` to upload
+
+## IMPORTANT — Session Memory (Read Every Session)
+
+**render.py is DELETED** — the active render script is `render_lit.py`. Always use that.
+
+**Python virtualenv** — there is no `.venv`. Use `.venv_ml` for render scripts:
+```bash
+/Users/fyefye/yt_automation/.venv_ml/bin/python3 render_lit.py
+```
+
+**Active artists / thumbnail photo sources:**
+- **ADX (ShawtyRøkk x Tezzus)** — thumbnail photo: `~/Dropbox/Shawtyrokk/IMG_9674.jpg` (Miami street, white jacket, dreads, "MIAMI NOW OPEN" sign). Currently copied to `images/adx.jpg`.
+- All press photos for Shawtyrokk are in `~/Dropbox/Shawtyrokk/` (IMG_9662 through IMG_9674 + MP4s).
+
+**FY3 Harry Potter lightning logo** — `brand/fy3_hp_stamp.png` is the gold HP-style "FY3 !" logo that goes on EVERY thumbnail, bottom-center, 20px from the bottom. This is the actual brand logo used across all thumbnails. Fallback: `brand/fy3_thumb_stamp.png` (red circular stamp). The `make_thumbnail()` function in `batch_ten.py` now stamps it automatically. "harry potter" or "FY3 logo" in user messages = this stamp.
+
+**FY3 DVD bouncing logo** — `render_lit.py` now generates an "FY3" text logo that bounces corner-to-corner like a DVD screensaver on all rendered videos. This is ALWAYS on by default. The logo PNG is cached in `/tmp/render_lit_assets/fy3_logo.png`. NOTE: the DVD bounce uses a plain generated text logo; for the actual brand logo in videos, use `brand/fy3_hp_stamp.png` or the `.mov` files in `brand/` (fy3_dvd_gold.mov, fy3_dvd_pink.mov).
+
+**Thumbnail generation** — `make_thumbnail()` is in `batch_ten.py`. To regenerate a single thumbnail without a full render:
+```python
+# Quick one-off thumbnail (run from project root with .venv_ml python):
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+import json
+
+stem = "adx"  # change this
+# NO TEXT on thumbnails — clean photo + FY3 stamp only
+bg = Image.open(f"images/{stem}.jpg").convert("RGB").resize((1920, 1080))
+stamp = Image.open("brand/fy3_hp_stamp.png").convert("RGBA")
+bg_rgba = bg.convert("RGBA")
+x = (bg_rgba.width - stamp.width) // 2
+bg_rgba.paste(stamp, (x, bg_rgba.height - stamp.height - 20), stamp)
+bg_rgba.convert("RGB").save(f"output/{stem}_thumb.jpg", "JPEG", quality=95)
+```
+
+**Upload thumbnail to YouTube** — after regenerating a thumb, update it via the YouTube API (needs `token.json` auth). Check `upload.py` for the `thumbnails().set()` method.
+
+**Artist folders** — visualizer clips may be in `images/{artist}/` subfolders (e.g., `images/BiggKutt8/visual_2.mp4`). `render_lit.py` checks artist subfolder via `seo_artist` field in metadata JSON.
+
+**Copyright note** — the user mentioned the visual UI is copyrighted. Avoid using third-party visual assets. The Doom fire, LTF glow, and FY3 DVD logo in `render_lit.py` are all procedurally generated — no third-party assets.

@@ -144,12 +144,16 @@ def record_store_log(stem: str, listing_url: str = ""):
 
 def get_beats(only: str = None) -> list:
     """Get list of beat stems to upload."""
+    seen = set()
     beats = []
-    for f in sorted(BEATS_DIR.glob("*.mp3")):
-        stem = f.stem
-        if stem.startswith("bg_"):
-            continue  # Skip Bowl Gospel remixes
-        beats.append(stem)
+    for pattern in ("*.mp3", "*.wav"):
+        for f in sorted(BEATS_DIR.rglob(pattern)):
+            stem = f.stem
+            if stem.startswith("bg_"):
+                continue  # Skip Bowl Gospel remixes
+            if stem not in seen:
+                seen.add(stem)
+                beats.append(stem)
 
     if only:
         allowed = set(s.strip() for s in only.split(","))
@@ -598,12 +602,157 @@ def safe_type(driver, element, text, clear=True):
         return False
 
 
+def _capture_airbit_short_link(driver, title: str, stem: str) -> str:
+    """After uploading, navigate to beats management and capture the air.bi short link.
+
+    Returns the air.bi short URL string (e.g. "https://air.bi/JpKme"),
+    or empty string if not found.
+    """
+    import re as _re
+    short_link = ""
+    try:
+        p("  [~] Looking for air.bi short link...")
+        driver.get("https://app.airbit.com/beats")
+        time.sleep(6)
+        dismiss_cookie_banner(driver)
+
+        # Scroll to load all beats (lazy-load)
+        for _ in range(5):
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(1.5)
+
+        # Find the beat row by matching title
+        # Airbit beats list: <h4><a href="/beats/{id}/edit">Title</a></h4>
+        title_links = driver.find_elements(By.CSS_SELECTOR, "h4 a[href*='/beats/'][href*='/edit']")
+
+        # Normalize title for fuzzy match
+        def _norm(s):
+            s = s.lower().strip()
+            # Strip artist prefix "Artist Type Beat - " and quotes
+            s = _re.sub(r'^.+?type\s*beat\s*[-–]\s*', '', s)
+            s = s.replace('"', '').replace('\u201c', '').replace('\u201d', '').replace("'", "").replace("!", "").strip()
+            return s
+
+        # Also try normalizing by stem (spaces→_)
+        stem_norm = stem.lower().strip()
+        title_norm = _norm(title)
+
+        beat_edit_url = ""
+        for link in title_links:
+            try:
+                link_text = link.text.strip()
+                href = link.get_attribute("href") or ""
+                if not href or not link_text:
+                    continue
+                link_norm = _norm(link_text)
+                # Match if normalized text aligns with our beat
+                if (link_norm and title_norm and link_norm == title_norm) or \
+                   (stem_norm and stem_norm.replace("_", "") in link_norm.replace(" ", "").replace("-", "")):
+                    beat_edit_url = href
+                    p(f"  [+] Found beat: '{link_text}'")
+                    break
+            except StaleElementReferenceException:
+                continue
+
+        # Fallback: grab the most recent beat (first in list — Airbit shows newest first)
+        if not beat_edit_url and title_links:
+            try:
+                beat_edit_url = title_links[0].get_attribute("href") or ""
+                if beat_edit_url:
+                    p(f"  [~] Using most recent beat as fallback for short link")
+            except StaleElementReferenceException:
+                pass
+
+        if not beat_edit_url:
+            p("  [WARN] Could not find beat in management list")
+            return ""
+
+        # Navigate to the beat's edit page
+        driver.get(beat_edit_url)
+        time.sleep(5)
+
+        # Look for air.bi short link on the edit/share section
+        # Airbit shows a "Short Link" or "Share" input with the air.bi URL
+        # Common selectors: input containing "air.bi", element with class *share*, *short*
+        short_link_candidates = []
+
+        # 1. Try to find any input/text element containing "air.bi"
+        all_inputs = driver.find_elements(By.TAG_NAME, "input")
+        for inp in all_inputs:
+            try:
+                val = inp.get_attribute("value") or ""
+                if "air.bi" in val:
+                    short_link_candidates.append(val.strip())
+            except StaleElementReferenceException:
+                continue
+
+        # 2. Try visible text elements (spans, divs, anchors) containing "air.bi"
+        if not short_link_candidates:
+            for tag in ("a", "span", "div", "p"):
+                els = driver.find_elements(By.TAG_NAME, tag)
+                for el in els:
+                    try:
+                        txt = el.text.strip()
+                        href = el.get_attribute("href") or ""
+                        if "air.bi" in txt:
+                            short_link_candidates.append(txt)
+                        elif "air.bi" in href:
+                            short_link_candidates.append(href)
+                    except StaleElementReferenceException:
+                        continue
+                if short_link_candidates:
+                    break
+
+        # 3. Try page source as last resort
+        if not short_link_candidates:
+            try:
+                source = driver.page_source
+                found = _re.findall(r'https?://air\.bi/[A-Za-z0-9_\-]+', source)
+                short_link_candidates.extend(found)
+            except Exception:
+                pass
+
+        if short_link_candidates:
+            # Pick first valid air.bi URL
+            for candidate in short_link_candidates:
+                # Extract URL pattern
+                match = _re.search(r'https?://air\.bi/[A-Za-z0-9_\-]+', candidate)
+                if match:
+                    short_link = match.group(0)
+                    break
+
+        if short_link:
+            p(f"  [+] air.bi short link: {short_link}")
+        else:
+            p("  [INFO] air.bi short link not found on edit page — will use store URL")
+
+    except Exception as e:
+        p(f"  [WARN] Short link capture failed: {e}")
+
+    return short_link
+
+
+def _save_airbit_url_to_metadata(stem: str, airbit_url: str):
+    """Save airbit_url field to metadata/{stem}.json."""
+    meta_path = META_DIR / f"{stem}.json"
+    try:
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        if meta.get("airbit_url") == airbit_url:
+            return  # Already saved
+        meta["airbit_url"] = airbit_url
+        meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+        p(f"  [+] Saved airbit_url to metadata/{stem}.json")
+    except Exception as e:
+        p(f"  [WARN] Could not save airbit_url to metadata: {e}")
+
+
 def upload_beat(driver, stem: str, meta: dict, calibrated: dict) -> bool | str:
     """Upload a single beat to Airbit.
 
     Returns True/str on success (str = listing URL if captured), False on failure.
     """
-    beat_path = BEATS_DIR / f"{stem}.mp3"
+    matches = list(BEATS_DIR.rglob(f"{stem}.mp3")) or list(BEATS_DIR.rglob(f"{stem}.wav"))
+    beat_path = matches[0] if matches else BEATS_DIR / f"{stem}.mp3"
     if not beat_path.exists():
         p(f"  [FAIL] Beat file missing: {beat_path}")
         return False
@@ -891,6 +1040,12 @@ def upload_beat(driver, stem: str, meta: dict, calibrated: dict) -> bool | str:
         # Default to store URL if no specific listing URL captured
         if not listing_url:
             listing_url = AIRBIT_STORE_URL
+
+        # ── Capture air.bi short link ──
+        short_link = _capture_airbit_short_link(driver, title, stem)
+        if short_link:
+            _save_airbit_url_to_metadata(stem, short_link)
+            listing_url = short_link  # Use short link as canonical URL
 
         p(f"  [OK] Upload flow completed for: {title}")
         return listing_url or True
@@ -1237,7 +1392,7 @@ def sync_store_links() -> dict:
         return {}
 
     # Get all local stems
-    all_stems = [f.stem for f in sorted(BEATS_DIR.glob("*.mp3"))]
+    all_stems = [f.stem for f in sorted(BEATS_DIR.rglob("*.mp3"))]
 
     # Match
     matches = match_store_to_stems(store_beats, all_stems)
@@ -1308,6 +1463,8 @@ First-time setup:
                         help="Scrape Airbit store to get per-beat URLs and update store_uploads_log.json")
     parser.add_argument("--fix-titles", action="store_true",
                         help="Rename beats on Airbit that have 'Type Beat' in title to just the beat name")
+    parser.add_argument("--fetch-short-links", action="store_true",
+                        help="Visit each beat's edit page on Airbit and capture air.bi short links into metadata JSON")
     args = parser.parse_args()
 
     # ── Fix titles mode ──
@@ -1324,6 +1481,63 @@ First-time setup:
         matches = sync_store_links()
         if matches:
             p(f"\n[COMPLETE] {len(matches)} beat links synced. Run 'python upload.py --fix-descriptions' to push to YouTube.")
+        return
+
+    # ── Fetch short links mode ──
+    if args.fetch_short_links:
+        stems_to_check = get_beats(args.only)
+        # Filter to only beats that don't already have an airbit_url
+        missing = []
+        for stem in stems_to_check:
+            meta_path = META_DIR / f"{stem}.json"
+            if meta_path.exists():
+                try:
+                    _m = json.loads(meta_path.read_text())
+                    if not _m.get("airbit_url"):
+                        missing.append(stem)
+                except Exception:
+                    missing.append(stem)
+            else:
+                missing.append(stem)
+
+        if not missing:
+            p("[OK] All beats already have airbit_url in metadata. Nothing to do.")
+            p("     Use --skip-uploaded false to re-fetch all.")
+            return
+
+        p(f"[~] Fetching air.bi short links for {len(missing)} beat(s)...")
+        driver = launch_browser()
+        try:
+            if not ensure_logged_in(driver):
+                p("[ERROR] Could not log in to Airbit")
+                driver.quit()
+                sys.exit(1)
+
+            # Load beats list once, then iterate
+            p("[~] Loading beats management list...")
+            driver.get("https://app.airbit.com/beats")
+            time.sleep(6)
+            dismiss_cookie_banner(driver)
+            for _ in range(8):
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+
+            fetched = 0
+            for stem in missing:
+                meta = load_metadata(stem)
+                beat_title = meta.get("beat_name", stem.replace("_", " ").title())
+                p(f"\n  [{stem}] {beat_title}")
+                short_link = _capture_airbit_short_link(driver, beat_title, stem)
+                if short_link:
+                    _save_airbit_url_to_metadata(stem, short_link)
+                    fetched += 1
+                else:
+                    p(f"  [INFO] No short link found for {stem}")
+
+            p(f"\n[COMPLETE] Fetched {fetched}/{len(missing)} air.bi short links.")
+            p("  Run 'python upload.py --fix-descriptions' to push updated links to YouTube.")
+        finally:
+            driver.quit()
         return
 
     skip_uploaded = args.skip_uploaded.lower() != "false"
@@ -1363,7 +1577,8 @@ First-time setup:
             genre = infer_genre(meta)
             moods = infer_moods(meta)
             tags = meta.get("tags", [])[:10]
-            beat_file = BEATS_DIR / f"{stem}.mp3"
+            _beat_matches = list(BEATS_DIR.rglob(f"{stem}.mp3"))
+            beat_file = _beat_matches[0] if _beat_matches else BEATS_DIR / f"{stem}.mp3"
             size_mb = beat_file.stat().st_size / (1024 * 1024) if beat_file.exists() else 0
 
             p(f"\n  [{stem}]")

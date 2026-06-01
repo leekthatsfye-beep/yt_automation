@@ -48,6 +48,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const opts: RequestInit = {
     method,
     headers: getAuthHeaders(),
+    cache: "no-store",
   };
   if (body) opts.body = JSON.stringify(body);
 

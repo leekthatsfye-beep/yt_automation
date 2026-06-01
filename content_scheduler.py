@@ -249,6 +249,95 @@ def get_youtube_scheduled_for_date(target: datetime | None = None) -> list[dict[
     return result
 
 
+def get_channel_feed(days_back: int = 3, days_ahead: int = 7) -> list[dict[str, Any]]:
+    """Return channel feed: beats (past N days + next N days) + recent shorts.
+
+    Each entry includes:
+      is_live: bool         — True if already published
+      content_type: str     — "beat" | "short"
+      date_label: str       — "Today", "Yesterday", "Mon Mar 30", etc.
+    Sorted newest-first.
+    """
+    now = datetime.now(EST)
+    cutoff_past   = now - timedelta(days=days_back)
+    cutoff_future = now + timedelta(days=days_ahead)
+    uploads  = _load_json(UPLOADS_LOG)
+    social   = _load_json(ROOT / "social_uploads_log.json")
+    clusters = _load_clusters()
+    result: list[dict[str, Any]] = []
+
+    def _date_label(dt: datetime) -> str:
+        date_str      = dt.strftime("%Y-%m-%d")
+        today_str     = now.strftime("%Y-%m-%d")
+        yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        if date_str == today_str:
+            return "Today"
+        if date_str == yesterday_str:
+            return "Yesterday"
+        return dt.strftime("%a %b %-d")
+
+    # ── Beats from uploads_log (have publishAt) ──────────────────────────────
+    for stem, info in uploads.items():
+        pa = info.get("publishAt")
+        if not pa:
+            continue
+        try:
+            dt = datetime.fromisoformat(pa).astimezone(EST)
+            if dt < cutoff_past or dt > cutoff_future:
+                continue
+            title = info.get("title", stem.replace("_", " ").title())
+            result.append({
+                "stem": stem,
+                "title": title,
+                "time": dt.strftime("%H:%M"),
+                "time_est": dt.strftime("%-I:%M %p"),
+                "date": dt.strftime("%Y-%m-%d"),
+                "date_label": _date_label(dt),
+                "url": info.get("url", ""),
+                "videoId": info.get("videoId", ""),
+                "publishAt": dt.isoformat(),
+                "lane": _detect_lane(title, stem, dt.hour, clusters),
+                "is_live": dt <= now,
+                "content_type": "beat",
+            })
+        except (ValueError, TypeError):
+            continue
+
+    # ── Shorts from social_uploads_log ───────────────────────────────────────
+    for stem, info in social.items():
+        yt = info.get("youtube_shorts", {})
+        if yt.get("status") != "ok" or not yt.get("videoId"):
+            continue
+        uploaded_at = yt.get("uploadedAt", "")
+        if not uploaded_at:
+            continue
+        try:
+            dt = datetime.fromisoformat(uploaded_at).astimezone(EST)
+            if dt < cutoff_past:
+                continue  # too old
+            meta  = _load_json(META_DIR / f"{stem}.json")
+            title = meta.get("title", stem.replace("_", " ").title())
+            result.append({
+                "stem": stem,
+                "title": f'Short: {title}',
+                "time": dt.strftime("%H:%M"),
+                "time_est": dt.strftime("%-I:%M %p"),
+                "date": dt.strftime("%Y-%m-%d"),
+                "date_label": _date_label(dt),
+                "url": yt.get("url", f'https://youtube.com/shorts/{yt["videoId"]}'),
+                "videoId": yt["videoId"],
+                "publishAt": dt.isoformat(),
+                "lane": _detect_lane(title, stem, dt.hour, clusters),
+                "is_live": True,  # shorts are always immediately live
+                "content_type": "short",
+            })
+        except (ValueError, TypeError):
+            continue
+
+    result.sort(key=lambda r: r["publishAt"], reverse=True)
+    return result
+
+
 def get_rendered_unuploaded() -> list[str]:
     """Stems that have a rendered MP4 + metadata but are not yet uploaded."""
     uploaded = _uploaded_stems()
@@ -371,50 +460,10 @@ def plan_daily_content(target_date: datetime | None = None) -> dict[str, Any]:
     except Exception as exc:
         logger.debug("Lane optimizer unavailable: %s", exc)
 
-    # Reorder slots so higher-priority lanes get earlier time slots
-    slot_defs = list(settings["slots"])
-    if lane_priority and len(lane_priority) >= 2:
-        # Group beat/short pairs by lane
-        lane_pairs: dict[str, list[dict]] = {}
-        for sd in slot_defs:
-            lane_pairs.setdefault(sd["lane"], []).append(sd)
-
-        # Sort lanes by priority (best-performing first)
-        sorted_lanes = sorted(
-            lane_pairs.keys(),
-            key=lambda l: lane_priority.index(l) if l in lane_priority else 999,
-        )
-
-        # Collect the time slots in order and reassign lanes
-        beat_times  = sorted(sd["time"] for sd in slot_defs if sd["type"] == "beat")
-        short_times = sorted(sd["time"] for sd in slot_defs if sd["type"] == "short")
-
-        # Lane display names fixed to time-of-day: breakfast=morning, lunch=afternoon, dinner=evening
-        fixed_lane_names = ["breakfast", "lunch", "dinner"]
-
-        reordered: list[dict] = []
-        for i, lane in enumerate(sorted_lanes):
-            if i < len(beat_times):
-                pair = lane_pairs[lane]
-                beat_def  = next((s for s in pair if s["type"] == "beat"), None)
-                short_def = next((s for s in pair if s["type"] == "short"), None)
-                # Keep source_lane for artist selection, set display lane to match time
-                display_lane = fixed_lane_names[i] if i < len(fixed_lane_names) else lane
-                if beat_def:
-                    reordered.append({**beat_def, "time": beat_times[i],
-                                      "source_lane": lane, "lane": display_lane})
-                if short_def and i < len(short_times):
-                    reordered.append({**short_def, "time": short_times[i],
-                                      "source_lane": lane, "lane": display_lane})
-
-        if len(reordered) == len(slot_defs):
-            # Regenerate labels based on the NEW time slots
-            for sd in reordered:
-                h = int(sd["time"].split(":")[0])
-                period = "Morning" if h < 12 else "Afternoon" if h < 17 else "Evening"
-                kind = "Beat" if sd["type"] == "beat" else "Short"
-                sd["label"] = f"{period} {kind}"
-            slot_defs = sorted(reordered, key=lambda s: s["time"])
+    # Slots stay in their fixed time order (breakfast → lunch → dinner).
+    # Lane priority only controls which artist cluster is picked first within
+    # each lane — it does NOT swap time slots around.
+    slot_defs = sorted(settings["slots"], key=lambda s: s["time"])
 
     for slot_def in slot_defs:
         lane      = slot_def.get("source_lane", slot_def["lane"])  # use source for selection
@@ -430,7 +479,7 @@ def plan_daily_content(target_date: datetime | None = None) -> dict[str, Any]:
         base = {
             "slot": slot_utc, "slot_est": slot_est,
             "time": slot_def["time"], "type": slot_type,
-            "lane": display_lane, "label": slot_def["label"],
+            "lane": display_lane, "source_lane": lane, "label": slot_def["label"],
         }
 
         if slot_type == "beat":
@@ -514,17 +563,67 @@ def _schedule_beat_upload(stem: str, schedule_time: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)[:300]}
 
 
-def _upload_short(stem: str) -> dict[str, Any]:
-    """Upload a Short by importing the existing youtube_shorts_upload function.
+SHORTS_LOG = ROOT / "shorts_uploads_log.json"
+
+
+def _load_shorts_log() -> dict[str, Any]:
+    if SHORTS_LOG.exists():
+        try:
+            return json.loads(SHORTS_LOG.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_shorts_log(data: dict[str, Any]) -> None:
+    SHORTS_LOG.write_text(json.dumps(data, indent=2))
+
+
+def _upload_short(stem: str, schedule_time: str | None = None) -> dict[str, Any]:
+    """Upload a Short using the existing youtube_shorts_upload function.
+
+    - If schedule_time (ISO datetime str) is provided, the Short is scheduled
+      private with publishAt — drops at the same moment as the beat video.
+    - Logs every upload to shorts_uploads_log.json (idempotent: skips re-uploads).
 
     Returns {"ok": True, "videoId": "..."} or {"ok": False, "error": "..."}.
     """
+    # Idempotency check
+    shorts_log = _load_shorts_log()
+    if stem in shorts_log:
+        p(f"[Scheduler] Short already uploaded for {stem} — skip")
+        return {"ok": True, "skipped": True, "videoId": shorts_log[stem].get("videoId", "")}
+
     try:
         sys.path.insert(0, str(ROOT))
         from social_upload import youtube_shorts_upload  # type: ignore[import-untyped]
-        result = youtube_shorts_upload(stem, privacy="public")
+
+        publish_at = None
+        if schedule_time:
+            from datetime import datetime as _dt
+            try:
+                publish_at = _dt.fromisoformat(schedule_time)
+            except Exception:
+                pass
+
+        result = youtube_shorts_upload(
+            stem,
+            privacy="private" if publish_at else "public",
+            publish_at=publish_at,
+        )
         if result.get("status") == "ok":
-            return {"ok": True, "videoId": result.get("videoId", "")}
+            video_id = result.get("videoId", "")
+            url = result.get("url", f"https://www.youtube.com/shorts/{video_id}")
+            entry: dict[str, Any] = {
+                "videoId":    video_id,
+                "url":        url,
+                "uploadedAt": datetime.now(timezone.utc).isoformat(),
+            }
+            if publish_at:
+                entry["publishAt"] = publish_at.isoformat()
+            shorts_log[stem] = entry
+            _save_shorts_log(shorts_log)
+            return {"ok": True, "videoId": video_id, "url": url}
         return {"ok": False, "error": result.get("error", "unknown")}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:300]}
@@ -581,7 +680,7 @@ def execute_daily_plan(
 
         # ── Short slot ────────────────────────────────────────────────
         elif slot["type"] == "short":
-            p(f"[Scheduler] Short created for {_beat_name(stem)}")
+            p(f"[Scheduler] Short scheduled for {_beat_name(stem)}")
 
             if dry_run:
                 results.append({**slot, "execution": "dry_run"})
@@ -595,11 +694,19 @@ def execute_daily_plan(
                                 "reason": "Short generation failed"})
                 continue
 
-            res = _upload_short(stem)
+            # Pass the slot time so Short drops at the same moment as its beat
+            slot_time = slot.get("slot")  # ISO UTC datetime string
+            res = _upload_short(stem, schedule_time=slot_time)
             if res["ok"]:
-                p(f"[Scheduler] Short uploaded for {stem} ✓")
-                results.append({**slot, "execution": "uploaded",
-                                "video_id": res.get("videoId", "")})
+                if res.get("skipped"):
+                    p(f"[Scheduler] Short already uploaded for {stem} — skip")
+                    results.append({**slot, "execution": "skipped",
+                                    "reason": "already uploaded"})
+                else:
+                    sched_str = f" → drops at {slot.get('time', slot_time)}" if slot_time else ""
+                    p(f"[Scheduler] Short scheduled for {stem}{sched_str} ✓")
+                    results.append({**slot, "execution": "uploaded",
+                                    "video_id": res.get("videoId", "")})
             else:
                 p(f"[Scheduler] ERROR uploading Short {stem}: {res['error']}")
                 results.append({**slot, "execution": "error", "reason": res["error"]})

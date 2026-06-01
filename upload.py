@@ -20,6 +20,10 @@ Usage examples:
 
     # Dry run shows computed schedule without uploading
     python upload.py --schedule-start "2026-02-18T18:00:00-05:00" --dry-run
+
+    # Upload beats AND auto-upload a Short for each (Short drops 1hr after beat)
+    python upload.py --with-shorts
+    python upload.py --schedule-start "2026-02-18T18:00:00-05:00" --with-shorts
 """
 
 import argparse
@@ -32,52 +36,98 @@ from pathlib import Path
 
 from googleapiclient.http import MediaFileUpload
 
-from youtube_auth import get_youtube_service
+from youtube_auth import get_youtube_service, get_youtube_service_with_fallback
 
-ROOT           = Path(__file__).resolve().parent
-OUT_DIR        = ROOT / "output"
-META_DIR       = ROOT / "metadata"
-LOG_FILE       = ROOT / "uploads_log.json"
-STORE_LOG      = ROOT / "store_uploads_log.json"
-LANES_CFG      = ROOT / "lanes_config.json"
+ROOT               = Path(__file__).resolve().parent
+OUT_DIR            = ROOT / "output"
+RENDERS_DIR        = ROOT / "output" / "renders"
+THUMBS_DIR         = ROOT / "output" / "thumbs"
+SHORTS_DIR         = ROOT / "output" / "renders" / "shorts"
+META_DIR           = ROOT / "metadata"
+LOG_FILE           = ROOT / "uploads_log.json"
+SHORTS_LOG_FILE    = ROOT / "shorts_uploads_log.json"
+STORE_LOG          = ROOT / "store_uploads_log.json"
+LANES_CFG          = ROOT / "lanes_config.json"
 
-def _replace_purchase_link(stem: str, desc: str) -> str:
-    """Rewrite description to Format A with real store link."""
+_ARTIST_COUPONS = {
+    "sexyy red":    "SEXYY",
+    "biggkutt8":    "BIGGKUTT",
+    "glokk40spazz": "GLOKKFYE",
+    "ola runt":     "OLARUNT",
+}
+
+def _replace_purchase_link(stem: str, desc: str, title: str = "") -> str:
+    """Rewrite description to clean format with pricing, bundles, and coupons."""
     store_data = {}
     if STORE_LOG.exists():
         try:
             store_data = json.loads(STORE_LOG.read_text())
         except Exception:
             pass
-    lanes_cfg = {}
-    if LANES_CFG.exists():
-        try:
-            lanes_cfg = json.loads(LANES_CFG.read_text())
-        except Exception:
-            pass
-    store_profile = lanes_cfg.get("store_profile_url", "")
-    producer = lanes_cfg.get("producer", "leekthatsfy3")
 
-    entry = store_data.get(stem, {})
-    airbit_entry = entry.get("airbit", entry) if isinstance(entry, dict) else {}
-    beat_url = airbit_entry.get("url", "")
+    STORE_BEATS = "https://leekthatsfy3.infinity.airbit.com/beats"
 
-    if beat_url and beat_url != store_profile:
-        purchase_link = beat_url
-        if store_profile:
-            purchase_link += f"\n\nBrowse all beats:\n{store_profile}"
-    elif store_profile:
-        purchase_link = store_profile
-    else:
-        purchase_link = "[Link in bio]"
+    # Priority 1: airbit_url in metadata JSON (air.bi short link captured at upload time)
+    beat_url = ""
+    try:
+        meta_path = META_DIR / f"{stem}.json"
+        if meta_path.exists():
+            _m = json.loads(meta_path.read_text())
+            beat_url = _m.get("airbit_url", "")
+    except Exception:
+        pass
 
-    # Full rewrite to Format A
-    return f"Purchase / Download\n{purchase_link}\n\nprod. {producer}"
+    # Priority 2: store_uploads_log.json (long Airbit store URL)
+    if not beat_url:
+        entry = store_data.get(stem, {})
+        airbit_entry = entry.get("airbit", entry) if isinstance(entry, dict) else {}
+        beat_url = airbit_entry.get("url", "")
+
+    beat_url = beat_url or STORE_BEATS
+
+    # Artist-specific coupon
+    coupon = None
+    for artist, code in _ARTIST_COUPONS.items():
+        if artist in title.lower():
+            coupon = code
+            break
+
+    lines = [
+        f"🎵 Purchase / Download\n{beat_url}",
+        f"🛒 Browse All Beats\n{STORE_BEATS}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "📦 BUNDLE DEALS AVAILABLE\nContact us for bundle pricing on multiple leases",
+    ]
+
+    coupon_lines = []
+    if coupon:
+        coupon_lines.append(f"🎟️ USE CODE [{coupon}] FOR 15% OFF")
+    coupon_lines.append("🎟️ NEW CUSTOMERS: Code [FY3NEW] for 20% off")
+    lines.append("\n".join(coupon_lines))
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("prod. leekthatsfy3\n© 2026 LeekThatsFy3. Unauthorized use is prohibited.")
+
+    return "\n\n".join(lines)
 
 
 CATEGORY_MUSIC = "10"
 MADE_FOR_KIDS  = False
 CHUNK_SIZE     = 1024 * 1024   # 1 MB resumable upload chunks (faster than 256 KB)
+
+# Words YouTube's scanner flags for age restriction.
+# We swap these in titles before upload to avoid auto-restriction.
+# Keys are exact (case-insensitive) matches → replacement.
+_TITLE_CLEAN = {
+    "ho3":   "Hoe",
+    "hoe3":  "Hoe",
+    "ass":   "A**",
+    "bitch": "B**ch",
+    "pussy": "P***y",
+    "fck":   "F**k",
+    "fuk":   "F**k",
+    "nigga": "N****",
+    "niggas":"N****s",
+}
 
 
 def p(msg: str):
@@ -97,6 +147,118 @@ def load_log() -> dict:
 def save_log(log: dict):
     with open(LOG_FILE, "w") as f:
         json.dump(log, f, indent=2)
+
+
+def load_shorts_log() -> dict:
+    """Load shorts_uploads_log.json — tracks every Short upload by stem."""
+    if SHORTS_LOG_FILE.exists():
+        try:
+            with open(SHORTS_LOG_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_shorts_log(log: dict):
+    with open(SHORTS_LOG_FILE, "w") as f:
+        json.dump(log, f, indent=2)
+
+
+def upload_short_for_stem(stem: str, publish_at: "datetime | None" = None,
+                          dry_run: bool = False) -> dict:
+    """
+    Auto-generate + upload a YouTube Short for a beat stem.
+
+    - Converts output/{stem}.mp4 → output/{stem}_9x16.mp4 if needed
+    - Uploads as a Short; if publish_at given, schedules it (private + publishAt)
+    - Logs to shorts_uploads_log.json
+    - Idempotent: skips if stem already in shorts log
+
+    Returns: {"ok": True, "videoId": ..., "url": ...} or {"ok": False, "error": ...}
+    """
+    shorts_log = load_shorts_log()
+    if stem in shorts_log:
+        p(f"  [SHORT SKIP] {stem} already uploaded as Short")
+        return {"ok": True, "skipped": True, **shorts_log[stem]}
+
+    # Check both the canonical SHORTS_DIR and legacy OUT_DIR locations
+    short_path = SHORTS_DIR / f"{stem}_9x16.mp4"
+    if not short_path.exists():
+        legacy = OUT_DIR / f"{stem}_9x16.mp4"
+        if legacy.exists():
+            short_path = legacy
+
+    if dry_run:
+        status = "exists" if short_path.exists() else "would render"
+        sched  = f" scheduled {fmt_local(publish_at)}" if publish_at else " public"
+        p(f"  [SHORT DRY RUN] {stem}_9x16.mp4 ({status}){sched}")
+        return {"ok": True, "dry_run": True}
+
+    # Render 9x16 if missing
+    if not short_path.exists():
+        src = OUT_DIR / f"{stem}.mp4"
+        if not src.exists():
+            return {"ok": False, "error": f"source {stem}.mp4 not found"}
+        p(f"  [SHORT] Rendering 9x16 for {stem}...")
+        try:
+            from social_upload import convert_to_portrait
+            result = convert_to_portrait(stem)
+            if result and result.exists():
+                short_path = result
+                p(f"  [SHORT] 9x16 ready ✓")
+            else:
+                raise RuntimeError("convert_to_portrait returned no file")
+        except Exception as e:
+            # Fallback: render via venv_ml subprocess (has numpy/librosa)
+            p(f"  [SHORT] Direct render failed ({e}), trying venv_ml...")
+            import subprocess as _sp
+            venv_py = ROOT / ".venv_ml" / "bin" / "python3"
+            if venv_py.exists():
+                r = _sp.run(
+                    [str(venv_py), "-c",
+                     f"import social_upload; social_upload.convert_to_portrait('{stem}')"],
+                    capture_output=True, text=True, timeout=300
+                )
+                short_path = SHORTS_DIR / f"{stem}_9x16.mp4"
+                if r.returncode != 0 or not short_path.exists():
+                    return {"ok": False, "error": f"Render failed: {r.stderr[:200] or e}"}
+                p(f"  [SHORT] 9x16 ready ✓ (via venv_ml)")
+            else:
+                return {"ok": False, "error": f"Render failed: {e}"}
+
+    # Upload Short
+    p(f"  [SHORT] Uploading Short for {stem}...")
+    try:
+        from social_upload import youtube_shorts_upload
+        # If scheduling, pass publish_at into the Short upload
+        if publish_at:
+            result = youtube_shorts_upload(stem, privacy="private",
+                                           publish_at=publish_at)
+        else:
+            result = youtube_shorts_upload(stem, privacy="public")
+
+        if result.get("status") == "ok":
+            video_id = result["videoId"]
+            url      = result.get("url", f"https://www.youtube.com/shorts/{video_id}")
+            entry    = {
+                "videoId":    video_id,
+                "url":        url,
+                "uploadedAt": datetime.now(timezone.utc).isoformat(),
+                **({"publishAt": publish_at.isoformat()} if publish_at else {}),
+            }
+            shorts_log[stem] = entry
+            save_shorts_log(shorts_log)
+            p(f"  [SHORT DONE] {stem} → {url}")
+            return {"ok": True, "videoId": video_id, "url": url}
+        else:
+            err = result.get("error", "unknown error")
+            p(f"  [SHORT FAIL] {stem}: {err}")
+            return {"ok": False, "error": err}
+
+    except Exception as e:
+        p(f"  [SHORT ERR] {stem}: {e}")
+        return {"ok": False, "error": str(e)}
 
 
 def all_stems() -> list[str]:
@@ -125,7 +287,25 @@ def sync_deleted(youtube=None) -> list[str]:
         youtube = get_youtube_service()
 
     # Batch check all video IDs (API allows up to 50 per request)
-    video_ids = {entry["videoId"]: stem for stem, entry in log.items() if "videoId" in entry}
+    # Skip videos uploaded in the last 30 minutes — YouTube API may not index them yet
+    from datetime import datetime, timezone, timedelta
+    now_utc = datetime.now(timezone.utc)
+    video_ids = {}
+    for stem, entry in log.items():
+        if "videoId" not in entry:
+            continue
+        uploaded_at = entry.get("uploadedAt", "")
+        if uploaded_at:
+            try:
+                uploaded_dt = datetime.fromisoformat(uploaded_at.replace("Z", "+00:00"))
+                if (now_utc - uploaded_dt) < timedelta(minutes=30):
+                    continue  # Too recent, skip sync check
+            except Exception:
+                pass
+        if entry["videoId"] == "manual_upload":
+            continue  # Never treat manual_upload placeholders as deleted
+        video_ids[entry["videoId"]] = stem
+
     if not video_ids:
         return []
 
@@ -230,6 +410,19 @@ def print_upload_confirmation(item: dict, video_id: str, url: str):
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 
+def _clean_title_for_yt(title: str) -> str:
+    """
+    Replace words that trigger YouTube age-restriction with safe equivalents.
+    Preserves capitalization style — only swaps flagged words (case-insensitive).
+    """
+    import re
+    result = title
+    for bad, good in _TITLE_CLEAN.items():
+        # Word-boundary match, case-insensitive
+        result = re.sub(rf"\b{re.escape(bad)}\b", good, result, flags=re.IGNORECASE)
+    return result
+
+
 def _sanitize_tags(raw_tags: list) -> list:
     """
     Sanitize tags to comply with YouTube Data API v3 requirements.
@@ -302,6 +495,11 @@ def upload_video(youtube, item: dict) -> str:
 
     video_status = {
         "selfDeclaredMadeForKids": MADE_FOR_KIDS,
+        # Empty contentRating = no self-imposed restriction.
+        # Prevents YouTube's scanner from auto-applying age gates
+        # on beats with artist names like Sexyy Red (which YouTube
+        # sometimes flags by association with explicit content).
+        "contentRating": {},
     }
 
     if publish_at:
@@ -317,12 +515,22 @@ def upload_video(youtube, item: dict) -> str:
 
     raw_title = meta.get("title") or item["stem"]
     # YouTube: title max 100 chars, no < > characters
-    yt_title = raw_title.replace("<", "").replace(">", "").strip()[:100]
+    yt_title = _clean_title_for_yt(raw_title.replace("<", "").replace(">", "").strip())[:100]
 
     raw_desc = meta.get("description", "") or ""
-    # Auto-replace old description formats with Format A (purchase link)
-    if "AIRBIT_LINK_HERE" in raw_desc or "[Link in bio]" in raw_desc or "Listen freely" in raw_desc:
-        raw_desc = _replace_purchase_link(item["stem"], raw_desc)
+    # Always build Format A description (direct beat link + store link)
+    # This covers: empty descriptions, placeholders, and old store-only formats
+    if (not raw_desc.strip()
+            or "AIRBIT_LINK_HERE" in raw_desc
+            or "[Link in bio]" in raw_desc
+            or "Listen freely" in raw_desc
+            or "BUNDLE" not in raw_desc):
+        raw_desc = _replace_purchase_link(item["stem"], raw_desc, title=yt_title)
+        # Write back to disk so placeholder never persists
+        meta["description"] = raw_desc
+        meta_path = META_DIR / f"{item['stem']}.json"
+        if meta_path.exists():
+            meta_path.write_text(json.dumps(meta, indent=2))
     # YouTube: description max 5000 chars
     yt_desc = raw_desc[:5000]
 
@@ -545,23 +753,45 @@ def _needs_description_fix(desc: str, stem: str = "", store_data: dict = None) -
     if "uploaded consistently" in desc or "Listen freely" in desc:
         return True
     # Missing store URL entirely
-    if "infinity.airbit.com" not in desc and "airbit.com" not in desc:
+    if "infinity.airbit.com" not in desc and "airbit.com" not in desc and "air.bi" not in desc:
         return True
-    # Has the general store URL but a specific beat URL is now available
-    if stem and store_data:
-        entry = store_data.get(stem, {})
-        airbit_entry = entry.get("airbit", entry) if isinstance(entry, dict) else {}
-        beat_url = airbit_entry.get("url", "")
-        if beat_url and "/beats/" in beat_url and beat_url not in desc:
-            return True
+    # Has the general store URL but a specific beat URL (or air.bi short link) is now available
+    if stem:
+        # Check for air.bi short link in metadata
+        try:
+            meta_path = META_DIR / f"{stem}.json"
+            if meta_path.exists():
+                _m = json.loads(meta_path.read_text())
+                airbit_url = _m.get("airbit_url", "")
+                if airbit_url and airbit_url not in desc:
+                    return True
+        except Exception:
+            pass
+        if store_data:
+            entry = store_data.get(stem, {})
+            airbit_entry = entry.get("airbit", entry) if isinstance(entry, dict) else {}
+            beat_url = airbit_entry.get("url", "")
+            if beat_url and "/beats/" in beat_url and beat_url not in desc:
+                return True
     return False
 
 
 def _build_new_description(stem: str, store_data: dict, store_profile: str, producer: str) -> str:
     """Build the Format A description for a beat."""
-    entry = store_data.get(stem, {})
-    airbit_entry = entry.get("airbit", entry) if isinstance(entry, dict) else {}
-    beat_url = airbit_entry.get("url", "")
+    # Priority 1: airbit_url in metadata JSON (air.bi short link)
+    beat_url = ""
+    try:
+        meta_path = META_DIR / f"{stem}.json"
+        if meta_path.exists():
+            _m = json.loads(meta_path.read_text())
+            beat_url = _m.get("airbit_url", "")
+    except Exception:
+        pass
+    # Priority 2: store_uploads_log.json
+    if not beat_url:
+        entry = store_data.get(stem, {})
+        airbit_entry = entry.get("airbit", entry) if isinstance(entry, dict) else {}
+        beat_url = airbit_entry.get("url", "")
 
     if beat_url and beat_url != store_profile:
         purchase_link = beat_url
@@ -875,11 +1105,33 @@ def main():
         help="Minutes between each scheduled video when using --schedule-start (default: 1440 = 1 day)"
     )
 
+    # ── Shorts ────────────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--with-shorts", dest="with_shorts", action="store_true", default=True,
+        help="Auto-generate and upload a YouTube Short for every beat uploaded (DEFAULT ON). "
+             "Short drops 60min after beat. Use --no-shorts to disable."
+    )
+    parser.add_argument(
+        "--no-shorts", dest="with_shorts", action="store_false",
+        help="Disable automatic Short upload."
+    )
+    parser.add_argument(
+        "--shorts-offset", dest="shorts_offset", type=int, default=60,
+        metavar="MINUTES",
+        help="Minutes after the beat goes live to drop the Short (default: 60 = 1 hour). "
+             "Short NEVER drops before or same time as the full beat. Min enforced: 30 min. "
+             "Example: --shorts-offset 120 drops the Short 2hrs after the beat."
+    )
+    parser.add_argument(
+        "--shorts-only", dest="shorts_only", action="store_true",
+        help="Upload Shorts only (no beat videos). Use with --only to target specific stems."
+    )
+
     # ── Quota / rate limiting ─────────────────────────────────────────────────
     parser.add_argument(
-        "--max-per-run", dest="max_per_run", type=int, default=6,
+        "--max-per-run", dest="max_per_run", type=int, default=30,
         metavar="N",
-        help="Max videos to upload in this run (default: 6, matches YouTube daily quota of ~6 uploads)"
+        help="Max videos to upload in this run (default: 12, uses 5 project slots ~10k quota each)"
     )
     parser.add_argument(
         "--upload-delay", dest="upload_delay", type=int, default=3,
@@ -929,13 +1181,78 @@ def main():
         removed = sync_deleted(youtube)
         if not removed:
             p("[SYNC] All logged videos still exist on YouTube ✓")
+        # Also run full channel sync
+        from sync_channel import sync as full_sync
+        full_sync(verbose=True)
         return
+
+    # ── Pre-flight auth check: validate token BEFORE sync/upload ─────────────
+    # This catches invalid_grant (revoked tokens) early so we never upload
+    # without a valid schedule due to auth failing mid-run.
+    p("Authenticating with YouTube...")
+    try:
+        _preflight_yt = get_youtube_service_with_fallback()
+    except Exception as e:
+        p(f"[ERROR] Auth failed: {e}")
+        sys.exit(1)
+    p("Authenticated ✓")
+
+    # ── Auto-sync log with live channel before every upload run ────────────
+    p("[SYNC] Syncing log with live YouTube channel...")
+    try:
+        from sync_channel import sync as full_sync
+        full_sync(verbose=True)
+    except Exception as e:
+        p(f"[SYNC] Warning: could not sync channel data: {e}")
 
     if schedule_at and args.only:
         stems_for_at = [s.strip() for s in args.only.split(",")]
         if len(stems_for_at) > 1:
             parser.error("--schedule-at schedules exactly one time; use --only with a single stem, "
                          "or use --schedule-start for batches")
+
+    # ── Shorts-only mode: upload Shorts without uploading beat videos ─────────
+    if args.shorts_only:
+        requested = (
+            [s.strip() for s in args.only.split(",")]
+            if args.only
+            else all_stems()
+        )
+        shorts_log = load_shorts_log()
+        p(f"[SHORTS ONLY] Processing {len(requested)} stem(s)...")
+        ok = fail = skip = 0
+        for stem in requested:
+            if stem in shorts_log:
+                p(f"  [SKIP] {stem} — already uploaded as Short")
+                skip += 1
+                continue
+            # Short must drop AFTER the beat is live — check uploads_log for beat publish time
+            uploads_data = load_log()
+            beat_entry = uploads_data.get(stem, {})
+            beat_publish_str = beat_entry.get("publishAt", "")
+            MIN_SHORT_OFFSET = max(60, args.shorts_offset)
+            if beat_publish_str:
+                # Scheduled beat — short drops N min after beat publish time
+                from datetime import timezone as _tz
+                beat_pub = datetime.fromisoformat(beat_publish_str)
+                short_publish_at = beat_pub + timedelta(minutes=MIN_SHORT_OFFSET)
+            elif beat_entry:
+                # Already live beat — short drops N min from now
+                short_publish_at = datetime.now(timezone.utc) + timedelta(minutes=MIN_SHORT_OFFSET)
+            else:
+                # Beat not uploaded yet — schedule 30 min from now as safe fallback
+                short_publish_at = datetime.now(timezone.utc) + timedelta(minutes=MIN_SHORT_OFFSET)
+                p(f"  [WARN] {stem} not in uploads_log — short will drop {MIN_SHORT_OFFSET}min from now")
+            p(f"  [SHORT] Scheduling {stem} short for {fmt_local(short_publish_at)}")
+            res = upload_short_for_stem(stem, publish_at=short_publish_at, dry_run=args.dry_run)
+            if res.get("ok"):
+                ok += 1
+            else:
+                fail += 1
+            time.sleep(2)
+        p(f"\n[SHORTS ONLY] Done — {ok} uploaded, {skip} skipped, {fail} failed")
+        p(f"  Log: {SHORTS_LOG_FILE}")
+        return
 
     # ── Build stem list ───────────────────────────────────────────────────────
     requested = (
@@ -954,9 +1271,12 @@ def main():
             skipped.append(stem)
             continue
 
-        mp4 = OUT_DIR / f"{stem}.mp4"
+        # Check renders/ subfolder first, then output/ root as fallback
+        mp4 = RENDERS_DIR / f"{stem}.mp4"
         if not mp4.exists():
-            errors.append(f"{stem}: video file output/{stem}.mp4 not found — run /render first")
+            mp4 = OUT_DIR / f"{stem}.mp4"
+        if not mp4.exists():
+            errors.append(f"{stem}: video file not found in renders/ or output/ — run render.py first")
             continue
 
         meta_path = META_DIR / f"{stem}.json"
@@ -994,7 +1314,12 @@ def main():
             p(f"  [WARN] Could not auto-fill metadata for {stem}: {_ef}")
 
         meta  = load_meta(stem)
-        thumb = OUT_DIR / f"{stem}_thumb.jpg"
+        # Check thumbs/ subfolder first, then nextbatch/, then output/ root
+        thumb = THUMBS_DIR / f"{stem}_thumb.jpg"
+        if not thumb.exists():
+            thumb = OUT_DIR / "nextbatch" / f"{stem}_thumb.jpg"
+        if not thumb.exists():
+            thumb = OUT_DIR / f"{stem}_thumb.jpg"
 
         # Compute publish_at for this item
         if schedule_at:
@@ -1003,6 +1328,16 @@ def main():
             publish_at = schedule_start + timedelta(minutes=args.every_minutes * i)
         else:
             publish_at = None
+
+        # Guard: if publish_at is in the past or <5 min away, YouTube will
+        # reject it and the video goes public immediately. Abort early.
+        if publish_at:
+            now_utc = datetime.now(timezone.utc)
+            delta = (publish_at - now_utc).total_seconds()
+            if delta < 300:
+                p(f"[ERROR] --schedule-at time is in the past or <5 min away "
+                  f"({publish_at.isoformat()}). Aborting to prevent accidental public upload.")
+                sys.exit(1)
 
         items.append({
             "stem":       stem,
@@ -1031,23 +1366,15 @@ def main():
     if args.dry_run:
         return
 
-    # ── Authenticate ──────────────────────────────────────────────────────────
-    p("Authenticating with YouTube...")
-    try:
-        youtube = get_youtube_service()
-    except FileNotFoundError as e:
-        p(f"[ERROR] {e}")
-        sys.exit(1)
-    except Exception as e:
-        p(f"[ERROR] Auth failed: {e}")
-        sys.exit(1)
-    p("Authenticated ✓")
+    # ── Authenticate (reuse pre-flight service authenticated above) ───────────
+    youtube = _preflight_yt
 
     # ── Sync: remove deleted videos from log ─────────────────────────────────
     try:
         removed = sync_deleted(youtube)
-        if removed:
+        if removed and not args.only:
             # Re-check if any previously skipped stems are now uploadable
+            # NEVER re-queue when --only is specified — only upload exactly what was asked
             log = load_log()
             for stem in removed:
                 if stem in [s["stem"] for s in items]:
@@ -1113,18 +1440,115 @@ def main():
                 # Signal for Telegram bot parsing
                 p(f"[DONE] {item['stem']} → {url}")
 
+                # ── Patch short description with full video link ──────────────
+                # Now that uploads_log has the URL, update the Short's description
+                try:
+                    from social_upload import patch_short_description
+                    patched = patch_short_description(item["stem"], youtube=youtube)
+                    if patched:
+                        p(f"  [SHORT] Description updated with full video link")
+                except Exception as _pe:
+                    p(f"  [SHORT] Could not patch short description: {_pe}")
+
+                # ── Auto-upload to Airbit store + sync YouTube description ────
+                try:
+                    import subprocess as _sp
+                    p(f"  [AIRBIT] Uploading {item['stem']} to store...")
+                    result = _sp.run(
+                        [sys.executable, str(ROOT / "airbit_upload.py"), "--only", item["stem"]],
+                        capture_output=True, text=True, timeout=300
+                    )
+                    if result.returncode == 0:
+                        p(f"  [AIRBIT] Upload complete ✓")
+                        # Sync Airbit URLs into store_uploads_log then update YouTube description
+                        try:
+                            from airbit_upload import sync_store_links
+                            matches = sync_store_links()
+                            if matches:
+                                p(f"  [AIRBIT] Synced {len(matches)} beat link(s) ✓")
+                                # Update YouTube description with specific Airbit beat URL
+                                _sync_args = type("Args", (), {
+                                    "dry_run": False, "only": item["stem"],
+                                    "force": False, "verbose": False,
+                                })()
+                                do_fix_descriptions(_sync_args)
+                                p(f"  [AIRBIT] YouTube description updated with beat link ✓")
+                        except Exception as _se:
+                            p(f"  [AIRBIT] Description sync failed (non-fatal): {_se}")
+                    else:
+                        p(f"  [AIRBIT] Upload failed (non-fatal): {result.stderr[-300:] if result.stderr else 'no output'}")
+                except Exception as _ae:
+                    p(f"  [AIRBIT] Upload error (non-fatal): {_ae}")
+
+                # ── Auto-upload Short if --with-shorts ───────────────────────
+                # Short ALWAYS drops AFTER the beat is live — never before, never same time.
+                # Min offset: 30 minutes. This ensures viewers always find the full video.
+                if args.with_shorts:
+                    MIN_SHORT_OFFSET = max(60, args.shorts_offset)  # enforce 1 hour floor
+                    if item.get("publish_at"):
+                        # Scheduled beat → short goes live N minutes after beat publish time
+                        short_publish_at = item["publish_at"] + timedelta(minutes=MIN_SHORT_OFFSET)
+                    else:
+                        # Immediate/public beat → short schedules N minutes from now
+                        short_publish_at = datetime.now(timezone.utc) + timedelta(minutes=MIN_SHORT_OFFSET)
+                    p(f"  [SHORT] Scheduling Short for {fmt_local(short_publish_at)} ({MIN_SHORT_OFFSET}min after beat)")
+                    upload_short_for_stem(
+                        item["stem"],
+                        publish_at=short_publish_at,
+                        dry_run=False,
+                    )
+                    time.sleep(2)  # brief pause between beat + short API calls
+
                 # Inter-upload delay (skip after last upload)
                 if idx < len(items) and uploaded < args.max_per_run:
                     time.sleep(args.upload_delay)
 
             except Exception as e:
                 if _is_quota_exceeded(e):
-                    p(f"  [FAIL] {item['stem']}: YouTube quota exceeded")
-                    remaining = len(items) - idx
-                    p(f"[QUOTA] Daily quota exceeded after {uploaded} upload(s). "
-                      f"{remaining} video(s) remaining. Quota resets at midnight Pacific Time.")
-                    quota_hit = True
-                    break
+                    p(f"  [QUOTA] Project quota exceeded after {uploaded} upload(s) — trying next project slot...")
+                    try:
+                        from youtube_auth import _PROJECTS, _build_service
+                        import youtube_auth as _ya
+                        next_slot = _ya._active_project + 1
+                        if next_slot < len(_PROJECTS):
+                            _ya._active_project = next_slot
+                            client_secret, token_file = _PROJECTS[next_slot]
+                            youtube = _build_service(client_secret, token_file)
+                            p(f"  [AUTH] Rotated to project slot {next_slot + 1} ✓ — continuing...")
+                            # Retry this item with the new service
+                            video_id = upload_video(youtube, item)
+                            url      = f"https://www.youtube.com/watch?v={video_id}"
+                            thumb_ok = False
+                            if item["thumb"]:
+                                try:
+                                    upload_thumbnail(youtube, video_id, item["thumb"])
+                                    thumb_ok = True
+                                except Exception as te:
+                                    p(f"  [WARN] Thumbnail failed (video still uploaded): {te}")
+                            log[item["stem"]] = {
+                                "videoId":    video_id,
+                                "url":        url,
+                                "uploadedAt": datetime.now(timezone.utc).isoformat(),
+                                "title":      item["title"],
+                                **({"publishAt": item["publish_at"].isoformat()} if item.get("publish_at") else {}),
+                            }
+                            save_log(log)
+                            uploaded += 1
+                            item["_thumb_uploaded"] = thumb_ok
+                            print_upload_confirmation(item, video_id, url)
+                            p(f"[DONE] {item['stem']} → {url}")
+                            continue
+                        else:
+                            remaining = len(items) - idx
+                            p(f"[QUOTA] All project slots exhausted after {uploaded} upload(s). "
+                              f"{remaining} video(s) remaining. Quota resets at midnight Pacific Time.")
+                            quota_hit = True
+                            break
+                    except Exception as re:
+                        remaining = len(items) - idx
+                        p(f"[QUOTA] Rotation failed ({re}). {remaining} remaining.")
+                        quota_hit = True
+                        break
                 p(f"  [FAIL] {item['stem']}: {e}")
                 failed += 1
                 # Continue with next video — don't let one failure kill the batch

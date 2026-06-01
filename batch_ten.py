@@ -77,28 +77,22 @@ def ensure_audio_safe_name(audio_file: Path) -> Path:
 
 
 def make_thumbnail(title, bg_path, out_path, font_path):
-    img  = Image.open(bg_path).convert("RGB")
-    draw = ImageDraw.Draw(img)
-    font = ImageFont.truetype(font_path, 72)
-    margin = 80
-    max_w  = img.size[0] - 2 * margin
-    words  = title.split()
-    lines, line = [], ""
-    for w in words:
-        test = (line + " " + w).strip()
-        if draw.textlength(test, font=font) <= max_w:
-            line = test
-        else:
-            if line:
-                lines.append(line)
-            line = w
-    if line:
-        lines.append(line)
-    y = 140
-    for ln in lines[:3]:
-        draw.text((margin + 3, y + 3), ln, font=font, fill=(0, 0, 0))
-        draw.text((margin,     y),     ln, font=font, fill=(255, 255, 255))
-        y += 90
+    img  = Image.open(bg_path).convert("RGB").resize((1920, 1080), Image.LANCZOS)
+    # No title text — clean photo only, FY3 stamp below
+    # Stamp FY3 Harry Potter lightning logo bottom-center
+    stamp_path = ROOT / "brand" / "fy3_hp_stamp.png"
+    if not stamp_path.exists():
+        stamp_path = ROOT / "brand" / "fy3_thumb_stamp.png"
+    if stamp_path.exists():
+        try:
+            img_rgba = img.convert("RGBA")
+            stamp = Image.open(stamp_path).convert("RGBA")
+            x = (img_rgba.width - stamp.width) // 2
+            y_s = img_rgba.height - stamp.height - 20
+            img_rgba.paste(stamp, (x, y_s), stamp)
+            img = img_rgba.convert("RGB")
+        except Exception:
+            pass
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path, "JPEG", quality=92)
 

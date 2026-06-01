@@ -22,7 +22,11 @@ remixes/
 
 # === Secrets ===
 client_secret.json
+client_secret_*.json
 token.json
+token_*.json
+.jwt_secret
+users.json
 .env
 *.env
 
@@ -48,6 +52,9 @@ Thumbs.db
 
 # === Whitelist arrangement templates ===
 !arrangements/templates/*.json
+
+# === Instagram instaloader sessions (sensitive — never commit) ===
+.ig_sessions/
 
 # === Embedded git repos ===
 app/frontend/.git/

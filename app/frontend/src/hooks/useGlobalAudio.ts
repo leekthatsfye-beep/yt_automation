@@ -33,6 +33,35 @@ let _retryCount = 0;
 const MAX_RETRIES = 2;
 const _listeners = new Set<() => void>();
 
+// ── Queue & Shuffle state ───────────────────────────────────────
+let _queue: GlobalBeat[] = [];          // ordered list (matches beats page)
+let _shuffled: GlobalBeat[] = [];        // shuffled copy when shuffle is on
+let _shuffle = false;                    // shuffle toggle
+
+function _buildShuffled(current: GlobalBeat) {
+  // Fisher-Yates shuffle of the whole queue, then ensure current is first
+  const copy = [..._queue];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  const idx = copy.findIndex((b) => b.stem === current.stem);
+  if (idx > 0) {
+    const [item] = copy.splice(idx, 1);
+    copy.unshift(item);
+  }
+  _shuffled = copy;
+}
+
+function _activeQueue(): GlobalBeat[] {
+  return _shuffle ? _shuffled : _queue;
+}
+
+function _currentIndex(): number {
+  if (!_currentBeat) return -1;
+  return _activeQueue().findIndex((b) => b.stem === _currentBeat!.stem);
+}
+
 function _notify() {
   _listeners.forEach((fn) => fn());
 }
@@ -122,6 +151,12 @@ function _createAndPlay(beat: GlobalBeat) {
     _playing = false;
     _currentTime = 0;
     _notify();
+    // Auto-advance to next beat
+    const idx = _currentIndex();
+    const q = _activeQueue();
+    if (idx >= 0 && idx < q.length - 1) {
+      setTimeout(() => _createAndPlay(q[idx + 1]), 300);
+    }
   };
 
   audio.onerror = () => {
@@ -212,6 +247,41 @@ export const globalAudio = {
     _createAndPlay(beat);
   },
 
+  /** Set the full ordered queue so autoplay / next / prev work across the library. */
+  setQueue(beats: GlobalBeat[], currentBeat?: GlobalBeat) {
+    _queue = beats;
+    if (_shuffle && currentBeat) _buildShuffled(currentBeat);
+    else if (_shuffle && _currentBeat) _buildShuffled(_currentBeat);
+    _notify();
+  },
+
+  playNext() {
+    const idx = _currentIndex();
+    const q = _activeQueue();
+    if (idx < 0 || idx >= q.length - 1) return;
+    _createAndPlay(q[idx + 1]);
+  },
+
+  playPrev() {
+    const idx = _currentIndex();
+    const q = _activeQueue();
+    // If more than 3s in, restart current track; else go back one
+    if (_audio && _currentTime > 3) {
+      _audio.currentTime = 0;
+      _currentTime = 0;
+      _notify();
+      return;
+    }
+    if (idx <= 0) return;
+    _createAndPlay(q[idx - 1]);
+  },
+
+  toggleShuffle() {
+    _shuffle = !_shuffle;
+    if (_shuffle && _currentBeat) _buildShuffled(_currentBeat);
+    _notify();
+  },
+
   pause() {
     if (_audio && !_audio.paused) {
       _audio.pause();
@@ -285,6 +355,16 @@ export const globalAudio = {
   get duration() { return _duration; },
   get isMuted() { return _muted; },
   get error() { return _error; },
+  get isShuffle() { return _shuffle; },
+  get hasNext() {
+    const idx = _currentIndex();
+    return idx >= 0 && idx < _activeQueue().length - 1;
+  },
+  get hasPrev() {
+    return _currentIndex() > 0 || (_audio ? _currentTime > 3 : false);
+  },
+  get queueLength() { return _activeQueue().length; },
+  get queueIndex() { return _currentIndex(); },
 };
 
 // ── Hook ────────────────────────────────────────────────────────
@@ -306,6 +386,11 @@ export function useGlobalAudio() {
     duration: _duration,
     isMuted: _muted,
     error: _error,
+    isShuffle: _shuffle,
+    hasNext: globalAudio.hasNext,
+    hasPrev: globalAudio.hasPrev,
+    queueLength: globalAudio.queueLength,
+    queueIndex: globalAudio.queueIndex,
     play: useCallback((beat: GlobalBeat) => globalAudio.play(beat), []),
     pause: useCallback(() => globalAudio.pause(), []),
     toggle: useCallback(() => globalAudio.toggle(), []),
@@ -314,5 +399,9 @@ export function useGlobalAudio() {
     toggleMute: useCallback(() => globalAudio.toggleMute(), []),
     close: useCallback(() => globalAudio.close(), []),
     skip: useCallback((s: number) => globalAudio.skip(s), []),
+    playNext: useCallback(() => globalAudio.playNext(), []),
+    playPrev: useCallback(() => globalAudio.playPrev(), []),
+    toggleShuffle: useCallback(() => globalAudio.toggleShuffle(), []),
+    setQueue: useCallback((beats: GlobalBeat[], current?: GlobalBeat) => globalAudio.setQueue(beats, current), []),
   };
 }

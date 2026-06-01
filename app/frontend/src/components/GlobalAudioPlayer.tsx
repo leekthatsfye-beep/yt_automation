@@ -13,6 +13,9 @@ import {
   Loader2,
   AlertCircle,
   RotateCcw,
+  Shuffle,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { useGlobalAudio, globalAudio } from "@/hooks/useGlobalAudio";
 
@@ -72,11 +75,19 @@ export default function GlobalAudioPlayer() {
     duration,
     isMuted,
     error,
+    isShuffle,
+    hasNext,
+    hasPrev,
+    queueIndex,
+    queueLength,
     toggle,
     seekRatio,
     toggleMute,
     close,
     skip,
+    playNext,
+    playPrev,
+    toggleShuffle,
   } = useGlobalAudio();
 
   const progressRef = useRef<HTMLDivElement>(null);
@@ -177,14 +188,38 @@ export default function GlobalAudioPlayer() {
           )}
         </div>
 
-        {/* Skip back */}
+        {/* Shuffle */}
+        <button
+          onClick={toggleShuffle}
+          className="hidden sm:flex p-1.5 rounded-md transition-all duration-200 flex-shrink-0"
+          style={{
+            color: isShuffle ? "var(--accent)" : "var(--text-secondary)",
+            background: isShuffle ? "var(--accent-muted)" : "transparent",
+          }}
+          title={isShuffle ? "Shuffle on" : "Shuffle off"}
+        >
+          <Shuffle size={13} />
+        </button>
+
+        {/* Prev beat */}
+        <button
+          onClick={playPrev}
+          disabled={!hasPrev}
+          className="p-1.5 rounded-md transition-all duration-200 flex-shrink-0"
+          style={{ color: hasPrev ? "var(--text-secondary)" : "var(--text-tertiary)", opacity: hasPrev ? 1 : 0.35 }}
+          title="Previous beat"
+        >
+          <ChevronLeft size={16} />
+        </button>
+
+        {/* Skip back 10s */}
         <button
           onClick={() => skip(-10)}
-          className="hidden sm:flex p-1.5 rounded-md transition-all duration-200 flex-shrink-0"
+          className="hidden lg:flex p-1.5 rounded-md transition-all duration-200 flex-shrink-0"
           style={{ color: "var(--text-secondary)" }}
           title="Back 10s"
         >
-          <SkipBack size={14} />
+          <SkipBack size={13} />
         </button>
 
         {/* Play/Pause */}
@@ -212,14 +247,25 @@ export default function GlobalAudioPlayer() {
           )}
         </button>
 
-        {/* Skip forward */}
+        {/* Skip forward 10s */}
         <button
           onClick={() => skip(10)}
-          className="hidden sm:flex p-1.5 rounded-md transition-all duration-200 flex-shrink-0"
+          className="hidden lg:flex p-1.5 rounded-md transition-all duration-200 flex-shrink-0"
           style={{ color: "var(--text-secondary)" }}
           title="Forward 10s"
         >
-          <SkipForward size={14} />
+          <SkipForward size={13} />
+        </button>
+
+        {/* Next beat */}
+        <button
+          onClick={playNext}
+          disabled={!hasNext}
+          className="p-1.5 rounded-md transition-all duration-200 flex-shrink-0"
+          style={{ color: hasNext ? "var(--text-secondary)" : "var(--text-tertiary)", opacity: hasNext ? 1 : 0.35 }}
+          title="Next beat"
+        >
+          <ChevronRight size={16} />
         </button>
 
         {/* Beat info */}
@@ -230,12 +276,22 @@ export default function GlobalAudioPlayer() {
           >
             {beat.title || beat.stem}
           </p>
-          <p
-            className="text-[11px] truncate mt-0.5"
-            style={{ color: error ? "var(--error)" : "var(--text-tertiary)" }}
-          >
-            {error || (beat.artist || "Unknown Artist")}
-          </p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <p
+              className="text-[11px] truncate"
+              style={{ color: error ? "var(--error)" : "var(--text-tertiary)" }}
+            >
+              {error || (beat.artist || "Unknown Artist")}
+            </p>
+            {queueLength > 1 && (
+              <span
+                className="text-[10px] font-mono flex-shrink-0"
+                style={{ color: "var(--text-tertiary)", opacity: 0.5 }}
+              >
+                {queueIndex + 1}/{queueLength}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Time */}
