@@ -200,7 +200,8 @@ def _best_font(size: int) -> ImageFont.FreeTypeFont:
 # ── Thumbnail ──────────────────────────────────────────────────────────────────
 
 def make_thumbnail(photo_path: Path, out_path: Path,
-                   width: int = 1920, height: int = 1080):
+                   width: int = 1920, height: int = 1080,
+                   portrait_crop: float = 0.40):
     """
     Photo scaled to fill 1920×1080 + FY3 HP stamp bottom-center.
     Idempotent — skips if already exists.
@@ -229,7 +230,7 @@ def make_thumbnail(photo_path: Path, out_path: Path,
             # Shift crop up slightly to preserve head at top
             new_w, new_h = width, int(width / img_ratio)
             img = img.resize((new_w, new_h), Image.LANCZOS)
-            top = max(0, int((new_h - height) * 0.40))  # 40% down, shows chains/shirt
+            top = max(0, int((new_h - height) * portrait_crop))
             img = img.crop((0, top, width, top + height))
 
         if stamp_path.exists():
@@ -252,7 +253,8 @@ def make_thumbnail(photo_path: Path, out_path: Path,
 def render_lit_video(audio_path: Path, photo_path: Path,
                      out_mp4: Path,
                      fy3_spin_path: Path | None = None,
-                     width: int = 1920, height: int = 1080, fps: int = 30):
+                     width: int = 1920, height: int = 1080, fps: int = 30,
+                     portrait_crop: float = 0.40):
     """
     Still photo background + looped FY3 spinning logo composited in Python (PIL),
     piped to ffmpeg. No ffmpeg overlay filter = no black bar ever.
@@ -274,7 +276,7 @@ def render_lit_video(audio_path: Path, photo_path: Path,
         left = (new_w - width) // 2
         bg_src = bg_src.crop((left, 0, left + width, height))
     else:
-        top = max(0, int((new_h - height) * 0.40))
+        top = max(0, int((new_h - height) * portrait_crop))
         bg_src = bg_src.crop((0, top, width, top + height))
     bg_rgba = bg_src.convert("RGBA")
 
@@ -422,8 +424,17 @@ def main():
                 raise FileNotFoundError(
                     f"No photo: images/{stem}.jpg or images/default.jpg")
 
-            # 3. Thumbnail
-            make_thumbnail(photo, OUT_DIR / f"{stem}_thumb.jpg", width, height)
+            # 3. Thumbnail — read optional thumb_crop from metadata
+            _meta_crop = 0.40
+            try:
+                import json as _json
+                _mp = META_DIR / f"{stem}.json"
+                if _mp.exists():
+                    _meta_crop = float(_json.loads(_mp.read_text()).get("thumb_crop", 0.40))
+            except Exception:
+                pass
+            make_thumbnail(photo, OUT_DIR / f"{stem}_thumb.jpg", width, height,
+                           portrait_crop=_meta_crop)
 
             # 4. Render (fall back to no-spin if spin overlay fails)
             p(f"  Rendering ({photo.name})...")
@@ -436,6 +447,7 @@ def main():
                     width         = width,
                     height        = height,
                     fps           = fps,
+                    portrait_crop = _meta_crop,
                 )
             except Exception as _spin_err:
                 if fy3_spin:
@@ -448,6 +460,7 @@ def main():
                         width         = width,
                         height        = height,
                         fps           = fps,
+                        portrait_crop = _meta_crop,
                     )
                 else:
                     raise
