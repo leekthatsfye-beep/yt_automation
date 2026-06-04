@@ -131,7 +131,7 @@ def record_store_log(stem: str, listing_url: str = ""):
         store_log[stem]["airbit"] = {
             "listing_id": "",
             "uploaded_at": datetime.now().isoformat(),
-            "url": listing_url or AIRBIT_STORE_URL,
+            "url": listing_url or f"https://leekthatsfy3.infinity.airbit.com/beats/{stem.lower().replace('_', '-')}",
         }
         STORE_LOG_FILE.write_text(json.dumps(store_log, indent=2))
     except Exception as e:
@@ -1037,9 +1037,11 @@ def upload_beat(driver, stem: str, meta: dict, calibrated: dict) -> bool | str:
         except Exception:
             pass
 
-        # Default to store URL if no specific listing URL captured
+        # Default to beat-specific URL derived from stem, not root store URL
         if not listing_url:
-            listing_url = AIRBIT_STORE_URL
+            import re as _re
+            _slug = _re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
+            listing_url = f"https://leekthatsfy3.infinity.airbit.com/beats/{_slug}"
 
         # ── Capture air.bi short link ──
         short_link = _capture_airbit_short_link(driver, title, stem)

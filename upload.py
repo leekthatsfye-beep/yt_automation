@@ -843,7 +843,8 @@ def do_fix_descriptions(args):
         if not _needs_description_fix(desc, stem=stem, store_data=store_data):
             continue
 
-        new_desc = _build_new_description(stem, store_data, store_profile, producer)
+        title = meta.get("title", "")
+        new_desc = _replace_purchase_link(stem, meta.get("description", ""), title=title)
         meta["description"] = new_desc
 
         video_id = log.get(stem, {}).get("videoId", "")
