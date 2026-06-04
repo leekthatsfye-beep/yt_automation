@@ -1454,25 +1454,37 @@ def main():
                 try:
                     import subprocess as _sp
                     p(f"  [AIRBIT] Uploading {item['stem']} to store...")
+                    _venv_py = ROOT / ".venv_ml" / "bin" / "python3"
+                    _airbit_py = str(_venv_py) if _venv_py.exists() else sys.executable
                     result = _sp.run(
-                        [sys.executable, str(ROOT / "airbit_upload.py"), "--only", item["stem"]],
+                        [_airbit_py, str(ROOT / "airbit_upload.py"), "--only", item["stem"]],
                         capture_output=True, text=True, timeout=300
                     )
                     if result.returncode == 0:
                         p(f"  [AIRBIT] Upload complete ✓")
-                        # Sync Airbit URLs into store_uploads_log then update YouTube description
+                        # Sync Airbit URLs via venv_ml subprocess, then update YouTube description
                         try:
-                            from airbit_upload import sync_store_links
-                            matches = sync_store_links()
-                            if matches:
-                                p(f"  [AIRBIT] Synced {len(matches)} beat link(s) ✓")
-                                # Update YouTube description with specific Airbit beat URL
+                            _sync_result = _sp.run(
+                                [_airbit_py, str(ROOT / "airbit_upload.py"), "--fetch-short-links", "--only", item["stem"]],
+                                capture_output=True, text=True, timeout=120
+                            )
+                            # Re-read metadata to pick up any captured airbit_url
+                            _meta_path = ROOT / "metadata" / f"{item['stem']}.json"
+                            _airbit_url = ""
+                            if _meta_path.exists():
+                                import json as _json
+                                _m2 = _json.loads(_meta_path.read_text())
+                                _airbit_url = _m2.get("airbit_url", "")
+                            if _airbit_url:
+                                p(f"  [AIRBIT] Short link captured: {_airbit_url}")
                                 _sync_args = type("Args", (), {
                                     "dry_run": False, "only": item["stem"],
                                     "force": False, "verbose": False,
                                 })()
                                 do_fix_descriptions(_sync_args)
                                 p(f"  [AIRBIT] YouTube description updated with beat link ✓")
+                            else:
+                                p(f"  [AIRBIT] No short link captured (will update when available)")
                         except Exception as _se:
                             p(f"  [AIRBIT] Description sync failed (non-fatal): {_se}")
                     else:

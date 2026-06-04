@@ -156,7 +156,13 @@ Scheduled uploads are always set to `privacyStatus=private` with `publishAt` —
 
 **FY3 Harry Potter lightning logo** — `brand/fy3_hp_stamp.png` is the gold HP-style "FY3 !" logo that goes on EVERY thumbnail, bottom-center, 20px from the bottom. This is the actual brand logo used across all thumbnails. Fallback: `brand/fy3_thumb_stamp.png` (red circular stamp). The `make_thumbnail()` function in `batch_ten.py` now stamps it automatically. "harry potter" or "FY3 logo" in user messages = this stamp.
 
-**FY3 DVD bouncing logo** — `render_lit.py` now generates an "FY3" text logo that bounces corner-to-corner like a DVD screensaver on all rendered videos. This is ALWAYS on by default. The logo PNG is cached in `/tmp/render_lit_assets/fy3_logo.png`. NOTE: the DVD bounce uses a plain generated text logo; for the actual brand logo in videos, use `brand/fy3_hp_stamp.png` or the `.mov` files in `brand/` (fy3_dvd_gold.mov, fy3_dvd_pink.mov).
+**FY3 spinning logo in videos** — `render_lit.py` composites a Y-axis spinning gold HP-style FY3 logo bottom-center on every rendered video. CRITICAL rules:
+- Spin frames live in `brand/fy3_spin_frames_clean/` as pre-generated transparent PNGs (f_0000.png … f_0119.png, 120 frames @ 30fps = 4s loop)
+- They are loaded directly as PIL RGBA images — NO ffmpeg video file decode ever
+- The render pipeline composites them in Python via `frame.alpha_composite(spin_frame, (x,y))` before piping raw RGB to ffmpeg
+- NEVER use `fy3_spin.webm`, `fy3_spin.mov`, or `fy3_dvd_gold.mov` as the spin source — they all have black backgrounds baked in due to macOS ffmpeg alpha decode issues
+- To regenerate spin frames: run the generation script logic in `render_lit.py` (search "fy3_spin_frames_clean") or re-run the PIL frame generation block used to create them
+- The `make_thumbnail()` function uses `brand/fy3_hp_stamp.png` (still PNG stamp, bottom-center, 20px from bottom) — separate from the video spin animation
 
 **Thumbnail generation** — `make_thumbnail()` is in `batch_ten.py`. To regenerate a single thumbnail without a full render:
 ```python
@@ -178,5 +184,7 @@ bg_rgba.convert("RGB").save(f"output/{stem}_thumb.jpg", "JPEG", quality=95)
 **Upload thumbnail to YouTube** — after regenerating a thumb, update it via the YouTube API (needs `token.json` auth). Check `upload.py` for the `thumbnails().set()` method.
 
 **Artist folders** — visualizer clips may be in `images/{artist}/` subfolders (e.g., `images/BiggKutt8/visual_2.mp4`). `render_lit.py` checks artist subfolder via `seo_artist` field in metadata JSON.
+
+**Portrait photo → landscape conversion** — when `images/{stem}.jpg` is a portrait photo, both `make_thumbnail()` and `render_lit_video()` use scale-to-fill + crop (NO blurred sidebars, NO black bars). Scale to fill width=1920, crop top 10% to keep subject's head in frame. This logic is locked into `render_lit.py` and applies to ALL still-image renders automatically.
 
 **Copyright note** — the user mentioned the visual UI is copyrighted. Avoid using third-party visual assets. The Doom fire, LTF glow, and FY3 DVD logo in `render_lit.py` are all procedurally generated — no third-party assets.

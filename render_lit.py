@@ -217,14 +217,20 @@ def make_thumbnail(photo_path: Path, out_path: Path,
         img = Image.open(photo_path).convert("RGB")
         img_ratio    = img.width / img.height
         target_ratio = width / height
+        # Scale-to-fill: no bars, no blur — crop excess
         if img_ratio > target_ratio:
+            # Wider than target — scale to height, crop sides
             new_h, new_w = height, int(img_ratio * height)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            left = (new_w - width) // 2
+            img = img.crop((left, 0, left + width, height))
         else:
+            # Taller than target (portrait) — scale to width, crop bottom
+            # Shift crop up slightly to preserve head at top
             new_w, new_h = width, int(width / img_ratio)
-        img  = img.resize((new_w, new_h), Image.LANCZOS)
-        left = (new_w - width) // 2
-        top  = (new_h - height) // 2
-        img  = img.crop((left, top, left + width, top + height))
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            top = max(0, int((new_h - height) * 0.40))  # 40% down, shows chains/shirt
+            img = img.crop((0, top, width, top + height))
 
         if stamp_path.exists():
             img_rgba = img.convert("RGBA")
@@ -248,62 +254,83 @@ def render_lit_video(audio_path: Path, photo_path: Path,
                      fy3_spin_path: Path | None = None,
                      width: int = 1920, height: int = 1080, fps: int = 30):
     """
-    Still photo background + looped FY3 spinning logo bottom-center.
-
-    Inputs:
-      [0] photo      (-loop 1)
-      [1] audio
-      [2] fy3_spin   (-stream_loop -1)   optional
-
-    filter_complex:
-      [0:v] scale+crop → [base]
-      [2:v] format=rgba → [spin]
-      [base][spin] overlay bottom-center → [out]
+    Still photo background + looped FY3 spinning logo composited in Python (PIL),
+    piped to ffmpeg. No ffmpeg overlay filter = no black bar ever.
     """
-    input0     = ["-loop", "1", "-i", str(photo_path)]
-    spin_input = []
-    if fy3_spin_path and fy3_spin_path.exists():
-        spin_input = ["-stream_loop", "-1", "-i", str(fy3_spin_path)]
+    from PIL import Image as PILImage
+    import io
 
-    base = (f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},format=yuv420p[base]")
-
-    if spin_input:
-        fc      = (base + ";"
-                   f"[2:v]format=rgba[spin];"
-                   f"[base][spin]overlay=x='(W-w)/2':y='H-h-20',format=yuv420p[out]")
-        map_out = "[out]"
+    # ── Prepare background ──────────────────────────────────────────────────
+    bg_src = PILImage.open(str(photo_path)).convert("RGB")
+    bg_w, bg_h = bg_src.size
+    bg_ratio = bg_w / bg_h
+    target_ratio = width / height
+    if bg_ratio > target_ratio:
+        new_h, new_w = height, int(bg_ratio * height)
     else:
-        fc      = base.replace("[base]", "[out]")
-        map_out = "[out]"
+        new_w, new_h = width, int(width / bg_ratio)
+    bg_src = bg_src.resize((new_w, new_h), PILImage.LANCZOS)
+    if bg_ratio > target_ratio:
+        left = (new_w - width) // 2
+        bg_src = bg_src.crop((left, 0, left + width, height))
+    else:
+        top = max(0, int((new_h - height) * 0.40))
+        bg_src = bg_src.crop((0, top, width, top + height))
+    bg_rgba = bg_src.convert("RGBA")
 
+    # ── Load spin logo frames — direct from PNG folder, no video decode ────
+    spin_frames = []
+    if fy3_spin_path and fy3_spin_path.exists():
+        frame_files = sorted(fy3_spin_path.glob("f_*.png"))
+        for ff in frame_files:
+            spin_frames.append(PILImage.open(str(ff)).convert("RGBA"))
+
+    # ── Get audio duration ──────────────────────────────────────────────────
+    probe = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(audio_path)],
+        capture_output=True, text=True
+    )
+    duration = float(probe.stdout.strip())
+    total_frames = int(duration * fps)
+
+    # ── Pipe composited frames to ffmpeg ────────────────────────────────────
     cmd = [
         "ffmpeg", "-y",
-        *input0,
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-s", f"{width}x{height}", "-pix_fmt", "rgb24",
+        "-r", str(fps), "-i", "pipe:0",
         "-i", str(audio_path),
-        *spin_input,
-        "-filter_complex", fc,
-        "-map", map_out,
-        "-map", "1:a:0",
-        "-r", str(fps),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-        "-threads", "0",
+        "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-shortest",
         str(out_mp4),
     ]
 
-    result = subprocess.run(
-        cmd,
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        timeout=1200,
-        text=True,
-    )
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    if result.returncode != 0:
-        lines = [l.strip() for l in (result.stderr or "").splitlines() if l.strip()]
+    n_spin = len(spin_frames)
+    for i in range(total_frames):
+        frame = bg_rgba.copy()
+        if n_spin > 0:
+            spin_frame = spin_frames[i % n_spin]
+            # Scale spin logo to reasonable size
+            sw = min(spin_frame.width, width // 2)
+            sh = int(spin_frame.height * sw / spin_frame.width)
+            if sw != spin_frame.width:
+                spin_frame = spin_frame.resize((sw, sh), PILImage.LANCZOS)
+            x = (width - sw) // 2
+            y = height - sh - 20
+            frame.alpha_composite(spin_frame, (x, y))
+        proc.stdin.write(frame.convert("RGB").tobytes())
+
+    proc.stdin.close()
+    proc.wait()
+
+    if proc.returncode != 0:
+        err = proc.stderr.read().decode()
+        lines = [l.strip() for l in err.splitlines() if l.strip()]
         raise RuntimeError(lines[-1] if lines else "unknown ffmpeg error")
 
 
@@ -355,13 +382,13 @@ def main():
         p("Nothing to render.")
         sys.exit(0)
 
-    # FY3 spinning logo
-    fy3_spin = ROOT / "brand" / "fy3_spin.mov"
-    if fy3_spin.exists():
-        p(f"[ASSETS] FY3 spinning logo: {fy3_spin.name}")
+    # FY3 spinning logo — load direct from pre-generated transparent PNGs (no video decode)
+    fy3_spin = ROOT / "brand" / "fy3_spin_frames_clean"
+    if fy3_spin.exists() and list(fy3_spin.glob("f_*.png")):
+        p(f"[ASSETS] FY3 spinning logo: {fy3_spin.name}/ ({len(list(fy3_spin.glob('f_*.png')))} frames)")
     else:
         fy3_spin = None
-        p("[WARN] brand/fy3_spin.mov not found — rendering without logo")
+        p("[WARN] brand/fy3_spin_frames_clean not found — rendering without logo")
 
     done_count = fail_count = skip_count = 0
     total = len(valid_stems)
@@ -398,17 +425,32 @@ def main():
             # 3. Thumbnail
             make_thumbnail(photo, OUT_DIR / f"{stem}_thumb.jpg", width, height)
 
-            # 4. Render
+            # 4. Render (fall back to no-spin if spin overlay fails)
             p(f"  Rendering ({photo.name})...")
-            render_lit_video(
-                audio_path    = audio_path,
-                photo_path    = photo,
-                out_mp4       = out_mp4,
-                fy3_spin_path = fy3_spin,
-                width         = width,
-                height        = height,
-                fps           = fps,
-            )
+            try:
+                render_lit_video(
+                    audio_path    = audio_path,
+                    photo_path    = photo,
+                    out_mp4       = out_mp4,
+                    fy3_spin_path = fy3_spin,
+                    width         = width,
+                    height        = height,
+                    fps           = fps,
+                )
+            except Exception as _spin_err:
+                if fy3_spin:
+                    p(f"  [WARN] Spin overlay failed ({_spin_err}), retrying without logo...")
+                    render_lit_video(
+                        audio_path    = audio_path,
+                        photo_path    = photo,
+                        out_mp4       = out_mp4,
+                        fy3_spin_path = None,
+                        width         = width,
+                        height        = height,
+                        fps           = fps,
+                    )
+                else:
+                    raise
 
             if out_mp4.exists():
                 size_mb = out_mp4.stat().st_size / 1_048_576
