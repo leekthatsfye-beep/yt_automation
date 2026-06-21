@@ -423,7 +423,7 @@ def _clean_title_for_yt(title: str) -> str:
     return result
 
 
-def _sanitize_tags(raw_tags: list) -> list:
+def _sanitize_tags(raw_tags: list, budget: int = 480) -> list:
     """
     Sanitize tags to comply with YouTube Data API v3 requirements.
     Rules enforced:
@@ -466,11 +466,16 @@ def _sanitize_tags(raw_tags: list) -> list:
         if lower in seen:
             continue
         seen.add(lower)
-        # Enforce 450-char total (YouTube rejects near 500 with commas counted)
-        if total + len(t) > 450:
+        # Enforce YouTube's REAL tag budget. The field caps at 500 chars, but
+        # multi-word tags are counted WITH surrounding quotes (+2 each) plus a
+        # separator — so raw len() undercounts and a "443-char" set can be 503
+        # to YouTube, which then rejects the WHOLE field. Count quotes+separator
+        # and stay under `budget` (default 480) to keep margin below the 500 cap.
+        cost = len(t) + (2 if " " in t else 0) + 1
+        if total + cost > budget:
             break
         clean.append(t)
-        total += len(t)
+        total += cost
 
     return clean
 
@@ -573,8 +578,10 @@ def upload_video(youtube, item: dict) -> str:
         err_str = str(e)
         # Auto-retry without tags if YouTube rejects them
         if "invalidTags" in err_str or "invalid video keywords" in err_str.lower():
-            p(f"  [WARN] Tags rejected by YouTube (invalidTags) — retrying without tags")
-            body_no_tags = {**body, "snippet": {**body["snippet"], "tags": []}}
+            # Don't drop ALL tags — trim hard and retry so the SEO set survives.
+            safe_tags = _sanitize_tags(meta.get("tags", []) or [], budget=350)
+            p(f"  [WARN] Tags rejected by YouTube — retrying with {len(safe_tags)} trimmed tags")
+            body_retry = {**body, "snippet": {**body["snippet"], "tags": safe_tags}}
             # Re-create media upload (stream already consumed)
             media2 = MediaFileUpload(
                 str(item["mp4"]),
@@ -582,7 +589,7 @@ def upload_video(youtube, item: dict) -> str:
                 resumable=True,
                 chunksize=CHUNK_SIZE,
             )
-            req2  = youtube.videos().insert(part="snippet,status", body=body_no_tags, media_body=media2)
+            req2  = youtube.videos().insert(part="snippet,status", body=body_retry, media_body=media2)
             resp2 = None
             while resp2 is None:
                 chunk_status2, resp2 = req2.next_chunk()
@@ -610,18 +617,8 @@ def update_video_metadata(youtube, video_id: str, meta: dict):
     """Update title, description, and tags on an existing YouTube video."""
     raw_title = (meta.get("title") or "").replace("<", "").replace(">", "").strip()[:100]
     raw_desc  = (meta.get("description") or "")[:5000]
-    yt_tags   = _sanitize_tags(meta.get("tags", []) or [])
-
-    # YouTube update API is stricter on tag budget than insert —
-    # enforce 450 char total (sum of lengths) as safe ceiling
-    trimmed = []
-    char_total = 0
-    for t in yt_tags:
-        if char_total + len(t) > 450:
-            break
-        trimmed.append(t)
-        char_total += len(t)
-    yt_tags = trimmed
+    # The update API is stricter than insert, so trim a little harder (460).
+    yt_tags   = _sanitize_tags(meta.get("tags", []) or [], budget=460)
 
     body = {
         "id": video_id,
@@ -636,8 +633,9 @@ def update_video_metadata(youtube, video_id: str, meta: dict):
         youtube.videos().update(part="snippet", body=body).execute()
     except Exception as e:
         if "invalidTags" in str(e) or "invalid video keywords" in str(e).lower():
-            p(f"  [WARN] Tags rejected — retrying without tags")
-            body["snippet"]["tags"] = []
+            # Trim hard and retry rather than wiping all tags.
+            body["snippet"]["tags"] = _sanitize_tags(meta.get("tags", []) or [], budget=350)
+            p(f"  [WARN] Tags rejected — retrying with {len(body['snippet']['tags'])} trimmed tags")
             youtube.videos().update(part="snippet", body=body).execute()
         else:
             raise
