@@ -352,17 +352,36 @@ def launch_browser():
     # Use random debug port so user's regular Chrome doesn't conflict
     options.add_argument("--remote-debugging-port=0")
 
-    # Auto-detect installed Chrome version to avoid driver mismatch
+    # Auto-detect installed Chrome version to avoid driver mismatch (cross-platform)
     import subprocess as _sp
     _chrome_ver = None
     try:
-        _out = _sp.check_output(
-            ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--version"],
-            stderr=_sp.DEVNULL, text=True,
-        ).strip()
-        # "Google Chrome 123.0.6312.107" → 123
-        _chrome_ver = int(_out.split()[-1].split(".")[0])
-        p(f"  [~] Detected Chrome version: {_chrome_ver}")
+        if sys.platform == "win32":
+            # Windows: read version from registry (BLBeacon), fall back to chrome.exe
+            import winreg
+            for _hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    _k = winreg.OpenKey(_hive, r"Software\Google\Chrome\BLBeacon")
+                    _v, _ = winreg.QueryValueEx(_k, "version")
+                    winreg.CloseKey(_k)
+                    _chrome_ver = int(str(_v).split(".")[0])
+                    break
+                except OSError:
+                    continue
+        elif sys.platform == "darwin":
+            _out = _sp.check_output(
+                ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--version"],
+                stderr=_sp.DEVNULL, text=True,
+            ).strip()
+            _chrome_ver = int(_out.split()[-1].split(".")[0])
+        else:
+            _out = _sp.check_output(["google-chrome", "--version"],
+                                    stderr=_sp.DEVNULL, text=True).strip()
+            _chrome_ver = int(_out.split()[-1].split(".")[0])
+        if _chrome_ver:
+            p(f"  [~] Detected Chrome version: {_chrome_ver}")
+        else:
+            p("  [~] Could not detect Chrome version, using default")
     except Exception:
         p("  [~] Could not detect Chrome version, using default")
 
@@ -589,13 +608,24 @@ def safe_type(driver, element, text, clear=True):
     """Safely type into an element, handling React controlled inputs."""
     try:
         if clear:
-            # For React inputs: select all + delete first
+            # For React inputs: select all + delete first.
+            # Use the platform select-all modifier — Cmd on macOS, Ctrl on
+            # Windows/Linux. (The Mac-only Keys.COMMAND was a no-op on Windows,
+            # so the field never cleared and new text appended to old.)
+            _selall = Keys.COMMAND if sys.platform == "darwin" else Keys.CONTROL
             element.click()
             time.sleep(0.2)
-            ActionChains(driver).key_down(Keys.COMMAND).send_keys('a').key_up(Keys.COMMAND).perform()
+            ActionChains(driver).key_down(_selall).send_keys('a').key_up(_selall).perform()
             time.sleep(0.1)
             ActionChains(driver).send_keys(Keys.DELETE).perform()
             time.sleep(0.1)
+            # Belt-and-suspenders for stubborn React controlled inputs
+            try:
+                if element.get_attribute("value"):
+                    element.send_keys(Keys.CONTROL, "a")
+                    element.send_keys(Keys.DELETE)
+            except Exception:
+                pass
         element.send_keys(text)
         return True
     except (ElementNotInteractableException, StaleElementReferenceException):

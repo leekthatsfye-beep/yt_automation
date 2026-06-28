@@ -1,0 +1,4 @@
+# FY3 — rendering pipeline only (render.py, batch_ten.py, seo_metadata.py)
+# System dependency: FFmpeg (ffmpeg + ffprobe) must be on PATH.
+PyYAML>=6.0
+Pillow>=11.0.0

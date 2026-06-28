@@ -370,6 +370,22 @@ def build_metadata(stem: str, existing: dict | None = None, lane: str | None = N
     beat_name = stem.replace("_", " ").title()
     meta["beat_name"] = beat_name
 
+    # Auto-fill accurate BPM/key from the audio if missing (numpy analyzer, no librosa).
+    # Feeds both YouTube SEO (vibe/tags) and the Airbit listing form.
+    if not (meta.get("bpm") and meta.get("key")):
+        try:
+            import beat_analysis
+            for _ext in (".mp3", ".wav"):
+                _a = beat_analysis.BEATS_DIR / f"{stem}{_ext}"
+                if _a.exists():
+                    _info = beat_analysis.analyze(_a)
+                    meta["bpm"] = _info["bpm"]
+                    meta["key"] = _info["key"]
+                    meta.setdefault("duration", _info["duration"])
+                    break
+        except Exception:
+            pass
+
     # Resolve primary artist from lane config
     if artist:
         meta["seo_artist"] = artist

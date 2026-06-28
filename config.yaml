@@ -1,6 +1,6 @@
 render:
   image_default: "images/default.jpg"
-  font_path: "/System/Library/Fonts/Supplemental/Arial.ttf"
+  font_path: "C:/Windows/Fonts/arial.ttf"   # Windows path (was macOS: /System/Library/Fonts/Supplemental/Arial.ttf)
   width: 1920
   height: 1080
   fps: 30

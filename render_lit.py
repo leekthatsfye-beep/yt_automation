@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -310,7 +311,11 @@ def render_lit_video(audio_path: Path, photo_path: Path,
         str(out_mp4),
     ]
 
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    # ffmpeg stderr → temp file, NOT a pipe. On Windows the 64KB stderr pipe
+    # buffer fills with ffmpeg's progress output, ffmpeg blocks, stops reading
+    # stdin, and the frame-write loop below deadlocks. A file has no such limit.
+    err_log = tempfile.TemporaryFile()
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=err_log)
 
     n_spin = len(spin_frames)
     for i in range(total_frames):
@@ -322,8 +327,10 @@ def render_lit_video(audio_path: Path, photo_path: Path,
             sh = int(spin_frame.height * sw / spin_frame.width)
             if sw != spin_frame.width:
                 spin_frame = spin_frame.resize((sw, sh), PILImage.LANCZOS)
+            # Lower-third, horizontally centered — keeps the logo clear of the
+            # subject's face (faces sit high in most portrait crops).
             x = (width - sw) // 2
-            y = height - sh - 20
+            y = height - sh - 70
             frame.alpha_composite(spin_frame, (x, y))
         proc.stdin.write(frame.convert("RGB").tobytes())
 
@@ -331,9 +338,12 @@ def render_lit_video(audio_path: Path, photo_path: Path,
     proc.wait()
 
     if proc.returncode != 0:
-        err = proc.stderr.read().decode()
+        err_log.seek(0)
+        err = err_log.read().decode(errors="replace")
+        err_log.close()
         lines = [l.strip() for l in err.splitlines() if l.strip()]
         raise RuntimeError(lines[-1] if lines else "unknown ffmpeg error")
+    err_log.close()
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -469,7 +479,18 @@ def main():
                 size_mb = out_mp4.stat().st_size / 1_048_576
                 p(f"[DONE] {stem}  ({size_mb:.1f} MB)")
                 done_count += 1
-                subprocess.Popen(["open", "-a", "QuickTime Player", str(out_mp4)])
+                # Auto-preview — best effort, platform-aware, NEVER fatal.
+                # (Mac used `open -a QuickTime`; on Windows that raised WinError 2,
+                #  which the except below caught and then DELETED the good render.)
+                try:
+                    if sys.platform == "darwin":
+                        subprocess.Popen(["open", "-a", "QuickTime Player", str(out_mp4)])
+                    elif sys.platform == "win32":
+                        os.startfile(str(out_mp4))  # type: ignore[attr-defined]
+                    else:
+                        subprocess.Popen(["xdg-open", str(out_mp4)])
+                except Exception:
+                    pass
             else:
                 raise RuntimeError("Output file not created")
 

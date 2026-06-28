@@ -316,18 +316,23 @@ def find_808_drop(audio_path: Path, search_limit: float = 30.0) -> float:
     """
     try:
         import numpy as np
-        import librosa
+        # numpy-only audio (ffmpeg decode + numpy STFT) — librosa needs numba,
+        # which has no Python 3.14 wheel, so it's unavailable on Windows. Reuse
+        # the same decoder/STFT the BPM/key analyzer runs on. See [[beat_analysis]].
+        from beat_analysis import load_audio, _stft_mag
 
         hop = 512
-        y, sr = librosa.load(str(audio_path), sr=None, mono=True,
-                             offset=0.0, duration=search_limit)
+        n_fft = 4096  # ~5.4 Hz/bin at 22.05 kHz → resolves the 30-150 Hz bass band
+        sr = 22050
+        y, _ = load_audio(audio_path, sr=sr)
+        y = y[: int(search_limit * sr)]  # only inspect the intro, not mid-song breakdowns
 
         # STFT-based bass energy (30-150 Hz band)
-        D = np.abs(librosa.stft(y, n_fft=2048, hop_length=hop))
-        freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+        D = _stft_mag(y, n_fft=n_fft, hop=hop)  # (freq, time)
+        freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
         bass_mask = (freqs >= 30) & (freqs <= 150)
         bass_energy = D[bass_mask, :].mean(axis=0)
-        times = librosa.frames_to_time(np.arange(len(bass_energy)), sr=sr, hop_length=hop)
+        times = np.arange(D.shape[1]) * hop / sr
 
         if bass_energy.max() == 0:
             log.info("[DROP] No bass energy found, starting at t=0")
@@ -390,7 +395,35 @@ def _get_duration(path: Path) -> float:
         return 0.0
 
 
-HOOK_FONT_PATH   = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+# Bold sans for the hook caption. This was a hardcoded macOS path; on Windows
+# it raises OSError and Pillow silently falls back to load_default() — a ~10px
+# bitmap font that IGNORES font_size — so the hook text rendered microscopic
+# ("hook not generating properly on Windows"). Resolve the first font that
+# actually exists on this machine instead.
+_HOOK_FONT_CANDIDATES = [
+    "C:/Windows/Fonts/arialbd.ttf",        # Windows — Arial Bold
+    "C:/Windows/Fonts/ariblk.ttf",         # Windows — Arial Black
+    "C:/Windows/Fonts/segoeuib.ttf",       # Windows — Segoe UI Bold
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",  # macOS
+    "/Library/Fonts/Arial Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
+]
+
+
+def _load_hook_font(size: int):
+    """First hook font that loads on this OS; scaled default as last resort."""
+    from PIL import ImageFont
+    for path in _HOOK_FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)  # Pillow >=10.1 scales the default
+    except TypeError:
+        return ImageFont.load_default()
+
+
 HOOK_FONT_SIZE   = 62    # px — readable on phone at arm's length
 HOOK_DURATION    = 3.5   # seconds the opening hook text is visible
 END_PROMPT_START = 3     # seconds before end to show the comment prompt
@@ -462,18 +495,57 @@ _END_PROMPTS = [
 ]
 
 
+# Map name fragments (as they appear in hooks OR in metadata artists) to a
+# canonical artist key, so an artist-specific hook only ever captions that
+# artist's beat. Crew names group under their artist (Krossed Ø Gang = ShawtyRøkk),
+# and known misspellings/stylings collapse together (Tezzus≈Teezus, Diamønd→diamond).
+# ø is normalized to o before matching.
+_HOOK_ARTIST_ALIASES = {
+    "shawtyrokk": "shawtyrokk",
+    "krossed":    "shawtyrokk",
+    "tezzus":     "teezus",
+    "teezus":     "teezus",
+    "diamond":    "diamond",
+}
+
+
+def _canon_artists(text: str) -> set:
+    """Canonical artist keys mentioned in a string (empty = artist-agnostic)."""
+    t = (text or "").lower().replace("ø", "o")
+    return {canon for frag, canon in _HOOK_ARTIST_ALIASES.items() if frag in t}
+
+
+def _beat_artists(stem: str) -> set:
+    """Canonical artist keys for this beat, from its metadata seo_artist(2)."""
+    mf = META_DIR / f"{stem}.json"
+    if not mf.exists():
+        return set()
+    try:
+        meta = json.loads(mf.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    return _canon_artists(f"{meta.get('seo_artist','')} {meta.get('seo_artist2','')}")
+
+
 def _pick_hook(stem: str, templates: list) -> str:
     """
     Pick a hook that changes daily — same stem gets a different hook each day.
     Uses stem hash + day-of-year so no two consecutive days repeat.
     Guarantees all hooks cycle through before any repeats (round-robin per stem).
+
+    Artist-aware: a template naming a specific artist is only eligible when ALL
+    artists it names are this beat's artists. Generic hooks are always eligible.
     """
     from datetime import date
+    artists  = _beat_artists(stem)
+    eligible = [t for t in templates if _canon_artists(t) <= artists]
+    if not eligible:                      # safety — should never happen (generics exist)
+        eligible = templates
     day_of_year = date.today().timetuple().tm_yday
     stem_hash   = sum(ord(c) for c in stem)
     # Offset by day so each new day shifts the entire rotation
-    idx = (stem_hash + day_of_year) % len(templates)
-    return templates[idx]
+    idx = (stem_hash + day_of_year) % len(eligible)
+    return eligible[idx]
 
 
 def _render_hook_overlay(stem: str, effective_duration: float, out_dir: Path) -> tuple[Path, Path]:
@@ -487,17 +559,8 @@ def _render_hook_overlay(stem: str, effective_duration: float, out_dir: Path) ->
 
     W, H = HOOK_W, HOOK_H
     font_size = HOOK_FONT_SIZE
-    try:
-        font = ImageFont.truetype(HOOK_FONT_PATH, font_size)
-    except OSError:
-        font = ImageFont.load_default()
-
-    # Use NotoColorEmoji for emoji rendering if available, fall back to Arial Bold
-    emoji_font_path = "/System/Library/Fonts/Apple Color Emoji.ttc"
-    try:
-        emoji_font = ImageFont.truetype(emoji_font_path, font_size)
-    except OSError:
-        emoji_font = font
+    font = _load_hook_font(font_size)
+    emoji_font = font  # emoji are stripped to an ASCII arrow below; no emoji font needed
 
     def _wrap_text(text: str, max_width: int) -> list[str]:
         """Split text into lines that fit within max_width pixels."""
@@ -564,8 +627,10 @@ def _render_hook_overlay(stem: str, effective_duration: float, out_dir: Path) ->
     open_text = _pick_hook(stem, _HOOK_TEMPLATES)
     end_text  = _pick_hook(stem, _END_PROMPTS)
 
-    open_img = _make_overlay(open_text, y_frac=0.20)   # top-fifth of screen
-    end_img  = _make_overlay(end_text,  y_frac=0.80)   # bottom-fifth of screen
+    # Keep captions in clear zones: opening ABOVE the artist's head (very top),
+    # end prompt ABOVE the FY3 logo (logo occupies ~0.68-0.94 of frame height).
+    open_img = _make_overlay(open_text, y_frac=0.10)   # above his head
+    end_img  = _make_overlay(end_text,  y_frac=0.60)   # above the logo
 
     open_path = out_dir / f"_hook_open_{stem}.png"
     end_path  = out_dir / f"_hook_end_{stem}.png"
@@ -730,18 +795,20 @@ def convert_to_portrait(
     audio_chain  = f"[{audio_label}]{af_filter}[aout]"
     audio_map    = "[aout]"
 
-    bg_filter = (
+    # Fill the 9:16 frame edge-to-edge via a center cover-crop of the source.
+    # The old approach letterboxed the whole 16:9 photo into a small middle
+    # strip over a barely-blurred full-body copy → a "3-band triptych" the user
+    # flagged as rendering weird on Windows. User wants Shorts FULLSCREEN /
+    # frame-to-frame, so cover-fill is the correct single-image composite.
+    compose_filter = (
         f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-        f"crop={W}:{H},scale={BW}:{BH},scale={W}:{H},"
-        f"format=yuv420p[bg]"
+        f"crop={W}:{H},format=yuv420p[composed]"
     )
-    fg_filter = f"[0:v]scale={W}:-2,format=yuv420p[fg]"
-    ov_filter = "[bg][fg]overlay=(W-w)/2:(H-h)/2[composed]"
 
     if has_spin:
         spin_filter = f"[composed][{spin_idx}:v]overlay=(W-w)/2:H-h-20,format=yuv420p[spun]"
         hook_chain, hook_inputs = _hook_overlay_filters(base_idx=spin_idx + 1, pre_label="spun")
-        vf = f"{bg_filter};{fg_filter};{ov_filter};{spin_filter};{hook_chain};{audio_chain}"
+        vf = f"{compose_filter};{spin_filter};{hook_chain};{audio_chain}"
         cmd = [
             "ffmpeg", "-y",
             "-stream_loop", "-1", *ss_args, "-i", str(clip_src),
@@ -759,7 +826,7 @@ def convert_to_portrait(
         ]
     else:
         hook_chain, hook_inputs = _hook_overlay_filters(base_idx=spin_idx, pre_label="composed")
-        vf = f"{bg_filter};{fg_filter};{ov_filter};{hook_chain};{audio_chain}"
+        vf = f"{compose_filter};{hook_chain};{audio_chain}"
         cmd = [
             "ffmpeg", "-y",
             "-stream_loop", "-1", *ss_args, "-i", str(clip_src),
