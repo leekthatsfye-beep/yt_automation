@@ -29,6 +29,43 @@ from youtube_auth import get_youtube_service_with_fallback
 
 STORE_BASE = "https://leekthatsfy3.infinity.airbit.com"
 LINK_RE = re.compile(r"https://leekthatsfy3\.infinity\.airbit\.com/beats/([A-Za-z0-9!%_-]+)")
+AIRBIT_USER_ID = 455547  # LeekThatsFy3 (from the store's public API)
+
+
+def fetch_store_via_api():
+    """Live store listings via Airbit's unauthenticated public API.
+
+    Returns {slug: {"title":..., "url":...}} like scrape_store_beats, but in
+    seconds and with no browser. Cursor-paginated. Returns {} on any failure
+    so the caller can fall back to the selenium scrape.
+    """
+    import json as _json
+    import urllib.request
+    beats, cursor = {}, None
+    try:
+        while True:
+            url = f"https://api.airbit.com/users/{AIRBIT_USER_ID}/beats?limit=100"
+            if cursor:
+                url += f"&cursor={cursor}"
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Referer": f"{STORE_BASE}/",
+                "Origin": STORE_BASE,
+            })
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = _json.loads(resp.read())
+            for it in data.get("items", []):
+                slug = it.get("alias") or ""
+                if slug:
+                    beats[slug] = {"title": it.get("name", ""),
+                                   "url": f"{STORE_BASE}/beats/{slug}"}
+            cursor = data.get("cursor")
+            if not cursor or not data.get("items"):
+                break
+    except Exception as e:
+        print(f"[WARN] Airbit API fetch failed ({e}) — will fall back to browser scrape")
+        return {}
+    return beats
 
 
 def norm(s: str) -> str:
@@ -86,10 +123,12 @@ def main():
                     help="repair bad links on YouTube (default: report only)")
     args = ap.parse_args()
 
-    # 1) live store state (public pages; login not required but profile reused)
-    store = au.scrape_store_beats()  # {slug: {"title":..., "url":...}}
+    # 1) live store state — public API first (seconds, no browser), selenium fallback
+    store = fetch_store_via_api()
     if not store:
-        print("[FAIL] could not scrape the Airbit store — aborting audit")
+        store = au.scrape_store_beats()  # {slug: {"title":..., "url":...}}
+    if not store:
+        print("[FAIL] could not read the Airbit store — aborting audit")
         return 1
     print(f"[+] live store listings: {len(store)}")
     by_name = {}
