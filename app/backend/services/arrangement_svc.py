@@ -387,8 +387,9 @@ def _analyze_pattern_notes(notes: list, pattern_name: str | None = None) -> dict
             ("perc",  ["perc", "shaker", "tambourine", "bongo", "conga",
                        "wood", "triangle", "guiro", "zap"]),
             # Chords / pads — sustained harmonic content
-            ("keys",  ["chord", "chords", "keys", "piano", "pad", "organ",
-                       "string", "strings", "rhodes", "ep", "electric piano"]),
+            ("keys",  ["chord", "chords", "keys", "key ", "key-", "piano", "pad", "organ",
+                       "string", "strings", "str_", "str ", "ensemble",
+                       "rhodes", "ep", "electric piano"]),
             # FX — transitions, risers, impacts
             ("fx",    ["fx", "sfx", "riser", "sweep", "impact", "noise",
                        "transition", "whoosh", "reverse"]),
@@ -1257,15 +1258,20 @@ def _build_retention_map(
 
 
 def _finalize_and_save(ctx: dict, raw_bytes: bytes, output_path: Path):
-    """Inject raw items (unsupported format) and save."""
+    """Inject raw items (unsupported format) or sync supported items, then save."""
+    pe = ctx["playlist_event"]
+
     if not ctx["supported"] and raw_bytes:
-        pe = ctx["playlist_event"]
         pe._kwds = {"new": False}
         pe._struct_size = 32
         parsed = pe.STRUCT.parse(raw_bytes, **pe._kwds)
         pe.value = parsed
         pe.data = pe.value
         logger.info("Injected %d raw 32-byte items", len(raw_bytes) // 32)
+    elif ctx["supported"]:
+        if pe.data is not pe.value:
+            pe.value = pe.data
+        logger.info("Saving %d playlist items (supported format)", len(pe.data))
 
     pyflp.save(ctx["project"], str(output_path))
 
@@ -1436,9 +1442,14 @@ def apply_template(
             pct = 20 + int((sec_idx + 1) / len(sections) * 60)
             progress_callback(pct, f"Placed: {section.get('label', '')} ({sec_detail['patterns_placed']} patterns)")
 
-    # ── Step 6: Save ──
+    # ── Step 6: Route channels to mixer tracks ──
     if progress_callback:
-        progress_callback(85, "Saving...")
+        progress_callback(85, "Routing channels to mixer...")
+    mixer_routing = _route_channels_to_mixer(ctx["project"], pattern_mapping)
+
+    # ── Step 7: Save ──
+    if progress_callback:
+        progress_callback(90, "Saving...")
     _finalize_and_save(ctx, all_raw, output_path)
     if progress_callback:
         progress_callback(100, "Done!")
@@ -1450,7 +1461,112 @@ def apply_template(
         "sections_applied": len(sections),
         "patterns_moved": total_moved,
         "layering_details": details,
+        "mixer_routing": mixer_routing,
     }
+
+
+def _route_channels_to_mixer(
+    project: Any,
+    pattern_mapping: dict[str, list[int]],
+) -> dict[str, int]:
+    """
+    Route each channel used in the arrangement to its own mixer insert.
+
+    Groups channels by role so they sit together in the mixer:
+    - Insert 1-N:  melody channels
+    - Insert N+1:  keys channels
+    - Then:        drums channels
+    - Then:        bass channels
+    - Then:        perc channels
+    - Then:        fx channels
+
+    Each channel gets its own insert so the producer can mix individually.
+    The mixer insert name is set to match the channel name for easy ID.
+
+    Returns: {channel_name: mixer_insert_number}
+    """
+    from pyflp.channel import _SamplerInstrument
+
+    # Build channel IID -> channel object lookup using ALL channels
+    channel_by_iid: dict[int, Any] = {}
+    try:
+        for ch in project.channels:
+            channel_by_iid[ch.iid] = ch
+    except Exception as e:
+        logger.warning("Could not iterate channels: %s", e)
+        return {}
+
+    # Build pattern IID -> set of channel IIDs from note data
+    pattern_channels: dict[int, set[int]] = {}
+    for pat in project.patterns:
+        try:
+            notes = list(pat.notes) if hasattr(pat, "notes") else []
+        except Exception:
+            notes = []
+        ch_iids = set()
+        for n in notes:
+            rc = getattr(n, "rack_channel", None)
+            if rc is not None:
+                ch_iids.add(rc)
+        if ch_iids:
+            pattern_channels[pat.iid] = ch_iids
+
+    # Collect all channel IIDs used by arranged patterns, grouped by role
+    ROLE_ORDER = ["melody", "keys", "drums", "bass", "perc", "fx"]
+    role_channels: dict[str, list[int]] = {}
+    all_routed: set[int] = set()
+
+    for role in ROLE_ORDER:
+        pat_iids = pattern_mapping.get(role, [])
+        for pid in pat_iids:
+            for ch_iid in sorted(pattern_channels.get(pid, set())):
+                if ch_iid not in all_routed:
+                    all_routed.add(ch_iid)
+                    role_channels.setdefault(role, []).append(ch_iid)
+
+    for role in pattern_mapping:
+        if role not in ROLE_ORDER:
+            for pid in pattern_mapping[role]:
+                for ch_iid in sorted(pattern_channels.get(pid, set())):
+                    if ch_iid not in all_routed:
+                        all_routed.add(ch_iid)
+                        role_channels.setdefault(role, []).append(ch_iid)
+
+    # Assign mixer inserts sequentially (insert 0 = Master, start at 1)
+    routing: dict[str, int] = {}
+    insert_idx = 1
+    max_inserts = 125
+
+    for role in ROLE_ORDER + [r for r in role_channels if r not in ROLE_ORDER]:
+        for ch_iid in role_channels.get(role, []):
+            if insert_idx >= max_inserts:
+                break
+
+            ch = channel_by_iid.get(ch_iid)
+            if ch is None:
+                continue
+
+            if not isinstance(ch, _SamplerInstrument):
+                continue
+
+            try:
+                ch.insert = insert_idx
+                ch_name = ch.name or f"Ch {ch_iid}"
+                routing[ch_name] = insert_idx
+
+                try:
+                    mixer_insert = project.mixer[insert_idx]
+                    mixer_insert.name = ch_name
+                except Exception:
+                    pass
+
+                logger.info("Routed '%s' -> Mixer Insert %d", ch_name, insert_idx)
+                insert_idx += 1
+            except Exception as e:
+                logger.warning("Could not route channel %s to mixer: %s", ch_iid, e)
+
+    logger.info("Mixer routing complete: %d channels routed to individual inserts", len(routing))
+    return routing
 
 
 def _decide_section_roles(

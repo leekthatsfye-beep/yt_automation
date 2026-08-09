@@ -400,6 +400,7 @@ async def one_click_arrange(
         "roles_detected": {role: len(ids) for role, ids in mapping.items()},
         "sections_applied": result["sections_applied"],
         "patterns_moved": result["patterns_moved"],
+        "mixer_routing": result.get("mixer_routing", {}),
         "had_existing_arrangement": analysis.get("has_existing_arrangement", False),
     }
 

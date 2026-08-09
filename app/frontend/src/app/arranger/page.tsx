@@ -28,6 +28,7 @@ interface ArrangeResult {
   roles_detected: Record<string, number>;
   sections_applied: number;
   patterns_moved: number;
+  mixer_routing: Record<string, number>;
   had_existing_arrangement: boolean;
 }
 
@@ -250,7 +251,7 @@ export default function ArrangerPage() {
             </p>
           </div>
           <div className="flex gap-3 mt-2">
-            {["Auto-detect roles", "Pick best template", "Smart layering"].map(
+            {["Auto-detect roles", "Pick best template", "Smart layering", "Mixer routing"].map(
               (feat) => (
                 <span
                   key={feat}
@@ -317,7 +318,7 @@ export default function ArrangerPage() {
             </p>
             <p className="text-[10px] text-text-tertiary mt-3 max-w-xs">
               Parsing FL Studio project, detecting pattern roles, picking the
-              best template, applying smart layering
+              best template, applying smart layering, routing to mixer
             </p>
           </div>
         </div>
@@ -536,6 +537,42 @@ export default function ArrangerPage() {
                 })}
               </div>
             </div>
+
+            {/* Mixer routing */}
+            {result.mixer_routing &&
+              Object.keys(result.mixer_routing).length > 0 && (
+                <div className="mt-4">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-text-tertiary mb-2">
+                    Mixer routing
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(result.mixer_routing).map(
+                      ([channel, insert]) => (
+                        <span
+                          key={channel}
+                          className="text-[10px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1.5"
+                          style={{
+                            background: "#00d36210",
+                            border: "1px solid #00d36230",
+                            color: "var(--text-secondary)",
+                          }}
+                        >
+                          <span
+                            className="text-[8px] font-bold px-1.5 py-0.5 rounded"
+                            style={{
+                              background: "#00d36220",
+                              color: "#00d362",
+                            }}
+                          >
+                            INS {insert}
+                          </span>
+                          {channel}
+                        </span>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
           </div>
 
           {/* Arrange another */}
