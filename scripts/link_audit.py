@@ -121,6 +121,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fix", action="store_true",
                     help="repair bad links on YouTube (default: report only)")
+    ap.add_argument("--root-fix", action="store_true",
+                    help="point AMBIGUOUS dead links (no live listing to fix to) "
+                         "at the store root /beats page")
+    ap.add_argument("--exclude", type=str, default="",
+                    help="comma-separated beat names to skip in --root-fix "
+                         "(e.g. beats about to be re-listed)")
     args = ap.parse_args()
 
     # 1) live store state — public API first (seconds, no browser), selenium fallback
@@ -183,36 +189,63 @@ def main():
     for v, slug, cands in ambiguous:
         print(f"  [AMBIG]    {v['id']} '{v['title'][:50]}' → /beats/{slug}; candidates: {cands}")
 
-    if not args.fix:
+    if not (args.fix or args.root_fix):
         if dead or mismatch or missing:
             print("\nRun with --fix to repair.")
         return 0 if not (dead or mismatch) else 1
 
-    # 3) repair
-    to_fix = [(v, f"{STORE_BASE}/beats/{fix_to}") for v, slug, fix_to in dead] \
-        + [(v, f"{STORE_BASE}/beats/{fix_to}") for v, slug, lt, fix_to in mismatch if fix_to] \
-        + [(v, f"{STORE_BASE}/beats/{slug}") for v, slug in missing]
+    # 3) build repair list
+    to_fix = []
+    if args.fix:
+        to_fix += [(v, f"{STORE_BASE}/beats/{fix_to}") for v, slug, fix_to in dead]
+        to_fix += [(v, f"{STORE_BASE}/beats/{fix_to}") for v, slug, lt, fix_to in mismatch if fix_to]
+        to_fix += [(v, f"{STORE_BASE}/beats/{slug}") for v, slug in missing]
+    if args.root_fix:
+        excl = {norm(x) for x in args.exclude.split(",") if x.strip()}
+        skipped_excl = 0
+        for v, slug, cands in ambiguous:
+            if cands:
+                continue  # has candidates — belongs to --fix territory, not root
+            nb = norm(beat_name_from_video_title(v["title"]))
+            if nb and nb in excl:
+                skipped_excl += 1
+                continue
+            to_fix.append((v, f"{STORE_BASE}/beats"))
+        if skipped_excl:
+            print(f"[~] root-fix: skipped {skipped_excl} video(s) on the exclude list")
+
     fixed = 0
+    quota_hit = False
+    from googleapiclient.errors import HttpError
     for v, new_url in to_fix:
-        r = yt.videos().list(part="snippet", id=v["id"]).execute()
-        if not r.get("items"):
-            continue
-        sn = r["items"][0]["snippet"]
-        desc = sn.get("description", "")
-        if LINK_RE.search(desc):
-            new_desc = LINK_RE.sub(new_url, desc, count=1)
-        else:
-            new_desc = desc.replace(f"{STORE_BASE}/beats", new_url, 1)
-        if new_desc == desc:
-            continue
-        yt.videos().update(part="snippet", body={"id": v["id"], "snippet": {
-            "title": sn["title"], "categoryId": sn.get("categoryId", "10"),
-            "description": new_desc, "tags": sn.get("tags", []),
-        }}).execute()
-        fixed += 1
-        print(f"  [FIXED] {v['id']} → {new_url}")
-        time.sleep(0.5)
-    print(f"\n[COMPLETE] {fixed} video description(s) repaired.")
+        try:
+            r = yt.videos().list(part="snippet", id=v["id"]).execute()
+            if not r.get("items"):
+                continue
+            sn = r["items"][0]["snippet"]
+            desc = sn.get("description", "")
+            if LINK_RE.search(desc):
+                new_desc = LINK_RE.sub(new_url, desc, count=1)
+            else:
+                new_desc = desc.replace(f"{STORE_BASE}/beats", new_url, 1)
+            if new_desc == desc:
+                continue
+            yt.videos().update(part="snippet", body={"id": v["id"], "snippet": {
+                "title": sn["title"], "categoryId": sn.get("categoryId", "10"),
+                "description": new_desc, "tags": sn.get("tags", []),
+            }}).execute()
+            fixed += 1
+            print(f"  [FIXED] {v['id']} → {new_url}")
+            time.sleep(0.5)
+        except HttpError as e:
+            if e.resp.status == 403 and b"quota" in e.content.lower():
+                quota_hit = True
+                print(f"\n[QUOTA] Daily YouTube quota exhausted after {fixed} fixes — "
+                      "re-run tomorrow to continue (audit re-derives remaining work).")
+                break
+            print(f"  [WARN] {v['id']}: {str(e)[:100]}")
+    print(f"\n[COMPLETE] {fixed} video description(s) repaired."
+          + (" (quota-limited — more remain)" if quota_hit else ""))
     return 0
 
 
