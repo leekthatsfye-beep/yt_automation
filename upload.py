@@ -1455,9 +1455,15 @@ def main():
                     p(f"  [AIRBIT] Uploading {item['stem']} to store...")
                     _venv_py = ROOT / ".venv_ml" / "bin" / "python3"
                     _airbit_py = str(_venv_py) if _venv_py.exists() else sys.executable
+                    # No capture_output: undetected_chromedriver's Chrome inherits
+                    # the stdout/stderr pipe handles, so a timeout-kill leaves the
+                    # pipe open and _sp.run blocks forever draining it (hung the
+                    # 2026-08-06 r0ll1ng_l0ud drop). Inheriting the parent's stdout
+                    # avoids pipes entirely and puts the subprocess log in the drop
+                    # log. Timeout raised: the guard+verify flow can exceed 5 min.
                     result = _sp.run(
                         [_airbit_py, str(ROOT / "airbit_upload.py"), "--only", item["stem"]],
-                        capture_output=True, text=True, timeout=300
+                        timeout=1800
                     )
                     if result.returncode == 0:
                         p(f"  [AIRBIT] Upload complete ✓")
@@ -1465,7 +1471,7 @@ def main():
                         try:
                             _sync_result = _sp.run(
                                 [_airbit_py, str(ROOT / "airbit_upload.py"), "--fetch-short-links", "--only", item["stem"]],
-                                capture_output=True, text=True, timeout=120
+                                timeout=300
                             )
                             # Re-read metadata to pick up any captured airbit_url
                             _meta_path = ROOT / "metadata" / f"{item['stem']}.json"
@@ -1607,6 +1613,21 @@ def main():
         p(f"[COMPLETE] {uploaded} uploaded, quota limit reached, {remaining} remaining")
     else:
         p(f"[COMPLETE] {uploaded}/{len(items)} uploaded")
+
+    # Auto-sync playlists after every successful upload
+    if uploaded > 0 and not quota_hit:
+        try:
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "make_playlists.py")],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0:
+                p(f"[PLAYLIST] Playlists synced ✓")
+            else:
+                p(f"[PLAYLIST] Sync warning: {result.stderr.strip()[:200]}")
+        except Exception as _e:
+            p(f"[PLAYLIST] Sync failed (non-fatal): {_e}")
 
 
 if __name__ == "__main__":

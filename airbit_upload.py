@@ -20,11 +20,15 @@ First run workflow:
 """
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import sys
+import tempfile
 import time
 import traceback
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -286,19 +290,28 @@ def find_element_adaptive(driver, field_name: str, calibrated: dict, timeout=5):
 
 
 def find_button_by_text(driver, texts):
-    """Find a button by matching text content."""
-    for text in texts:
-        try:
-            buttons = driver.find_elements(By.TAG_NAME, "button")
-            for btn in buttons:
-                try:
-                    btn_text = btn.text.strip().lower()
-                    if text.lower() in btn_text and btn.is_displayed():
-                        return btn
-                except StaleElementReferenceException:
-                    continue
-        except Exception:
-            continue
+    """Find a button by matching text content.
+
+    Prefers an EXACT text match over substring: on Airbit's create form both
+    "Save" (row-level, publishes row 0) and "Save All" (bulk-publishes every
+    queued draft) exist — a substring match for "Save" could hit "Save All"
+    if DOM order ever changes, which would publish 30+ junk drafts.
+    """
+    for exact in (True, False):
+        for text in texts:
+            try:
+                buttons = driver.find_elements(By.TAG_NAME, "button")
+                for btn in buttons:
+                    try:
+                        btn_text = btn.text.strip().lower()
+                        hit = (btn_text == text.lower()) if exact \
+                            else (text.lower() in btn_text)
+                        if hit and btn.is_displayed():
+                            return btn
+                    except StaleElementReferenceException:
+                        continue
+            except Exception:
+                continue
 
     # Also try input[type=submit]
     try:
@@ -328,7 +341,33 @@ def dismiss_cookie_banner(driver):
 #  Browser Management
 # ═══════════════════════════════════════════════
 
-def launch_browser():
+def _kill_stale_automation_chrome():
+    """Kill orphaned Chrome/chromedriver holding the automation profile.
+
+    A timeout-killed run leaves chrome.exe (with our profile) and
+    undetected_chromedriver.exe behind; the next launch then fails with
+    'session not created: cannot connect to chrome'. Only touches processes
+    whose command line references OUR profile — never the user's browser.
+    """
+    if sys.platform != "win32":
+        return
+    import subprocess as _sp
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+        "Where-Object { $_.CommandLine -match 'airbit_chrome_profile' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
+        "Get-CimInstance Win32_Process -Filter \"Name='undetected_chromedriver.exe'\" | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    try:
+        _sp.run(["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True, timeout=30)
+        p("  [~] Cleaned stale automation Chrome/chromedriver")
+    except Exception:
+        pass
+
+
+def launch_browser(_retry=True):
     """Launch Chrome with undetected-chromedriver and persistent profile."""
     CHROME_PROFILE.mkdir(exist_ok=True)
 
@@ -388,6 +427,11 @@ def launch_browser():
     try:
         driver = uc.Chrome(options=options, version_main=_chrome_ver)
     except Exception as e:
+        if _retry:
+            p(f"  [~] Chrome launch failed ({str(e)[:80]}) — cleaning stale processes and retrying")
+            _kill_stale_automation_chrome()
+            time.sleep(3)
+            return launch_browser(_retry=False)
         p(f"\n[ERROR] Failed to launch Chrome: {e}")
         p("[ERROR] Close all Chrome windows and try again.")
         sys.exit(1)
@@ -396,35 +440,44 @@ def launch_browser():
     return driver
 
 
+def _is_login_url(url: str) -> bool:
+    return any(k in url for k in ("login", "sign", "auth", "accounts.airbit"))
+
+
 def ensure_logged_in(driver) -> bool:
-    """Check if logged into Airbit, prompt for manual login if not."""
+    """Check if logged into Airbit; if not, wait up to 3 min for the user to log in via the open browser."""
     p("[~] Checking Airbit login status...")
     driver.get(AIRBIT_DASHBOARD)
     time.sleep(8)  # Nuxt.js SPA + potential redirect
     dismiss_cookie_banner(driver)
 
     current = driver.current_url
-    if "login" in current or "sign" in current or "auth" in current or "accounts.airbit" in current:
-        if sys.stdin.isatty():
-            p("\n" + "=" * 60)
-            p("  AIRBIT LOGIN REQUIRED")
-            p("=" * 60)
-            p(f"\n  Login URL: {current}")
-            p("  A Chrome window has opened.")
-            p("  Please log in to your Airbit account.")
-            p("  Once you see your dashboard, come back here.")
-            input("\n>>> Press Enter after logging in: ")
+    if _is_login_url(current):
+        p("\n" + "=" * 60)
+        p("  AIRBIT LOGIN REQUIRED")
+        p("=" * 60)
+        p(f"\n  Login URL: {current}")
+        p("  Chrome is open — log into Airbit in that window.")
+        p("  Waiting up to 3 minutes for you to finish...")
+
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            time.sleep(3)
+            try:
+                current = driver.current_url
+            except Exception:
+                break
+            if not _is_login_url(current):
+                break
         else:
-            # Non-interactive (called from backend/Telegram) — cannot prompt
-            p("[ERROR] Airbit login required but running non-interactively.")
-            p("[ERROR] Run airbit_upload.py --login from Terminal first.")
+            p("[ERROR] Timed out waiting for Airbit login (3 min).")
             return False
 
-        driver.get(AIRBIT_DASHBOARD)
-        time.sleep(8)
+        # Extra settle time for SPA to load dashboard
+        time.sleep(5)
         current = driver.current_url
-        if "login" in current or "sign" in current or "auth" in current or "accounts.airbit" in current:
-            p("[ERROR] Still not logged in. Try again.")
+        if _is_login_url(current):
+            p("[ERROR] Still not logged in after waiting.")
             return False
 
     p("[OK] Logged into Airbit")
@@ -581,7 +634,7 @@ def calibrate_selectors(driver) -> dict:
             p(f"  [-] {field_name}: not found")
 
     # ── Find submit button ──
-    btn = find_button_by_text(driver, ["Save", "Save All", "Publish"])
+    btn = find_button_by_text(driver, ["Save", "Publish"])
     if btn:
         btn_text = btn.text.strip()
         p(f"  [+] Submit button: '{btn_text}'")
@@ -684,14 +737,10 @@ def _capture_airbit_short_link(driver, title: str, stem: str) -> str:
             except StaleElementReferenceException:
                 continue
 
-        # Fallback: grab the most recent beat (first in list — Airbit shows newest first)
-        if not beat_edit_url and title_links:
-            try:
-                beat_edit_url = title_links[0].get_attribute("href") or ""
-                if beat_edit_url:
-                    p(f"  [~] Using most recent beat as fallback for short link")
-            except StaleElementReferenceException:
-                pass
+        # NOTE: deliberately NO most-recent-beat fallback here. If our beat
+        # isn't in the list (e.g. its upload failed), the most recent listing
+        # is a DIFFERENT beat — capturing its link would poison our metadata
+        # and YouTube description with the wrong store URL.
 
         if not beat_edit_url:
             p("  [WARN] Could not find beat in management list")
@@ -776,6 +825,117 @@ def _save_airbit_url_to_metadata(stem: str, airbit_url: str):
         p(f"  [WARN] Could not save airbit_url to metadata: {e}")
 
 
+def _norm_name(s: str) -> str:
+    """Normalize a beat name/stem/filename for fuzzy comparison."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _resolve_beat_path(stem: str):
+    matches = list(BEATS_DIR.rglob(f"{stem}.mp3")) or list(BEATS_DIR.rglob(f"{stem}.wav"))
+    return matches[0] if matches else BEATS_DIR / f"{stem}.mp3"
+
+
+def _beat_row_name_inputs(driver):
+    return driver.find_elements(
+        By.CSS_SELECTOR, "input[name^='beats['][name$='][name]']")
+
+
+def _find_edit_url(driver, stem: str, title: str) -> str:
+    """Locate a beat's edit URL on the app.airbit.com/beats management list."""
+    driver.get("https://app.airbit.com/beats")
+    time.sleep(6)
+    dismiss_cookie_banner(driver)
+    for _ in range(5):
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1.5)
+    want = _norm_name(title) or _norm_name(stem)
+    for link in driver.find_elements(By.CSS_SELECTOR, "h4 a[href*='/beats/'][href*='/edit']"):
+        try:
+            got = _norm_name(link.text)
+            if got and (want in got or got in want):
+                return link.get_attribute("href") or ""
+        except StaleElementReferenceException:
+            continue
+    return ""
+
+
+def _audio_duration_seconds(path) -> float:
+    """Duration via ffprobe; 0.0 on failure."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=60)
+        return float(out.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def verify_listing_audio(driver, stem: str, title: str) -> tuple[bool, str]:
+    """Verify the audio Airbit actually has for this beat matches the local file.
+
+    Downloads the untagged MP3 from the listing's edit page (Files tab) and
+    compares md5 against the local beat; falls back to a duration check when
+    Airbit transcoded the file (e.g. WAV uploads). Returns (ok, message).
+    """
+    local = _resolve_beat_path(stem)
+    if not local.exists():
+        return False, f"local beat missing: {local}"
+
+    # A just-published listing can take ~30-60s to appear in the management
+    # list — retry the lookup before declaring failure.
+    edit_url = ""
+    for attempt in range(3):
+        edit_url = _find_edit_url(driver, stem, title)
+        if edit_url:
+            break
+        if attempt < 2:
+            p(f"  [~] Listing not in management list yet (try {attempt + 1}/3) — waiting 25s")
+            time.sleep(25)
+    if not edit_url:
+        return False, "beat not found in Airbit management list"
+
+    driver.get(edit_url)
+    time.sleep(12)
+    # Open the Files tab (React tab nav — plain anchors with text 'Files')
+    driver.execute_script("""
+        const els = [...document.querySelectorAll('a, button, li')]
+            .filter(e => (e.textContent||'').trim() === 'Files');
+        if (els.length) els[els.length-1].click();
+    """)
+    time.sleep(4)
+    dl_href = driver.execute_script("""
+        const a = [...document.querySelectorAll('a')].find(e =>
+            e.textContent.trim() === 'MP3' && (e.href||'').includes('/beats/download/'));
+        return a ? a.href : null;
+    """)
+    if not dl_href:
+        return False, f"no MP3 download link on edit page ({edit_url})"
+
+    tmp = Path(tempfile.gettempdir()) / f"airbit_verify_{stem}.mp3"
+    try:
+        with urllib.request.urlopen(dl_href, timeout=120) as resp:
+            tmp.write_bytes(resp.read())
+    except Exception as e:
+        return False, f"could not download Airbit MP3: {e}"
+
+    remote_md5 = hashlib.md5(tmp.read_bytes()).hexdigest()
+    local_md5 = hashlib.md5(local.read_bytes()).hexdigest()
+    if remote_md5 == local_md5:
+        return True, f"AUDIO MATCH (md5 {local_md5[:8]})"
+
+    # Airbit may transcode (WAV→MP3): fall back to duration comparison
+    remote_dur = _audio_duration_seconds(tmp)
+    local_dur = _audio_duration_seconds(local)
+    if remote_dur and local_dur and abs(remote_dur - local_dur) <= 1.5:
+        return True, (f"AUDIO MATCH by duration ({remote_dur:.1f}s vs {local_dur:.1f}s; "
+                      f"md5 differs — Airbit transcode)")
+    return False, (f"AUDIO MISMATCH — Airbit has {remote_dur:.1f}s "
+                   f"(md5 {remote_md5[:8]}), local is {local_dur:.1f}s "
+                   f"(md5 {local_md5[:8]}). WRONG BEAT ON LISTING.")
+
+
 def upload_beat(driver, stem: str, meta: dict, calibrated: dict) -> bool | str:
     """Upload a single beat to Airbit.
 
@@ -816,6 +976,23 @@ def upload_beat(driver, stem: str, meta: dict, calibrated: dict) -> bool | str:
         except Exception:
             p("  [WARN] Could not click New choice, trying anyway...")
 
+        # ── Step 0.5: RECORD PRE-UPLOAD QUEUE STATE ──
+        # Airbit's create form keeps EVERY previously-uploaded file as a
+        # persistent draft row (35+ observed). New uploads land at beats[0].
+        # The 2026-08-05 h00dr1ch drop shipped the wrong beat because the
+        # form was filled while beats[0] still held the PREVIOUS drop's
+        # audio. So: remember what row 0 is now, and only proceed once row 0
+        # provably becomes OUR file (checked after upload below).
+        pre_rows = _beat_row_name_inputs(driver)
+        pre_top = ""
+        if pre_rows:
+            try:
+                pre_top = pre_rows[0].get_attribute("value") or ""
+            except StaleElementReferenceException:
+                pass
+            p(f"  [INFO] Upload queue holds {len(pre_rows)} old draft row(s); "
+              f"current top: '{pre_top}'")
+
         # ── Step 1: Upload MP3 file ──
         file_el = None
         # Find the audio file input (not artwork)
@@ -846,6 +1023,61 @@ def upload_beat(driver, stem: str, meta: dict, calibrated: dict) -> bool | str:
         # Wait for file upload to process (Airbit converts to 320kbps MP3)
         p("  [~] Waiting for Airbit to process file...")
         time.sleep(12)
+
+        # ── Step 1.2: FORM-INTEGRITY GUARD ──
+        # Metadata is filled into beats[0][...] — so row 0 MUST be our freshly
+        # uploaded file before we touch anything. Airbit prefills the row name
+        # from the uploaded filename; wait until the top row's prefill matches
+        # our stem. Airbit's server-side processing has taken 3+ minutes on
+        # recent drops (d33p charg3, kant br3ath3), so the window is generous.
+        # If it never lands, Save would publish whatever stale draft sits at
+        # row 0 — abort.
+        def _row0_matches():
+            try:
+                top = driver.find_element(
+                    By.CSS_SELECTOR, "input[name='beats[0][name]']")
+                pre = top.get_attribute("value") or ""
+            except (NoSuchElementException, StaleElementReferenceException):
+                pre = ""
+            ok = bool(pre) and (_norm_name(stem) in _norm_name(pre)
+                                or _norm_name(pre) in _norm_name(stem))
+            return ok, pre
+
+        matched, prefill = False, ""
+        # Airbit's server-side processing regularly takes several minutes and
+        # the row only appears after a page load — so wait, then reload the
+        # create form (the queued upload is server-side; reloading does NOT
+        # re-upload) and wait again, up to 3 rounds (~12 min total).
+        for attempt in range(3):
+            deadline = time.time() + (420 if attempt == 0 else 150)
+            while time.time() < deadline:
+                matched, prefill = _row0_matches()
+                if matched:
+                    break
+                time.sleep(5)
+            if matched:
+                break
+            p(f"  [~] Row 0 is '{prefill}' after wait #{attempt + 1} — reloading create form")
+            driver.get(AIRBIT_UPLOAD)
+            time.sleep(10)
+            dismiss_cookie_banner(driver)
+            try:
+                driver.execute_script(
+                    'var el = document.querySelector(\'[data-choice="new"]\');'
+                    'if (el) el.click();'
+                )
+                time.sleep(3)
+            except Exception:
+                pass
+            matched, prefill = _row0_matches()
+            if matched:
+                break
+        if not matched:
+            p(f"  [FAIL] Top row is '{prefill}', not our file '{stem}' — the upload "
+              "did not land at beats[0] after extended waits. Aborting before Save "
+              "so the wrong audio can't be published.")
+            return False
+        p(f"  [+] Form integrity OK — beats[0] is our file (prefill '{prefill}')")
 
         # ── Step 1.5: Upload cover art (thumbnail) ──
         thumb_path = OUT_DIR / f"{stem}_thumb.jpg"
@@ -1022,8 +1254,10 @@ def upload_beat(driver, stem: str, meta: dict, calibrated: dict) -> bool | str:
         time.sleep(1)
 
         # ── Step 8: Click Save ──
+        # "Save All" is deliberately NOT a candidate: it bulk-publishes every
+        # stale draft in the queue (30+ junk listings), not just our row.
         btn = find_button_by_text(driver, [
-            "Save", "Save All", "Publish", "Submit",
+            "Save", "Publish", "Submit",
         ])
 
         if btn:
@@ -1497,7 +1731,36 @@ First-time setup:
                         help="Rename beats on Airbit that have 'Type Beat' in title to just the beat name")
     parser.add_argument("--fetch-short-links", action="store_true",
                         help="Visit each beat's edit page on Airbit and capture air.bi short links into metadata JSON")
+    parser.add_argument("--verify", action="store_true",
+                        help="Verify existing Airbit listings play the correct audio (use with --only)")
     args = parser.parse_args()
+
+    # ── Verify mode ──
+    if args.verify:
+        stems_to_check = get_beats(args.only)
+        if not stems_to_check:
+            p("[ERROR] No beats to verify")
+            sys.exit(1)
+        driver = launch_browser()
+        bad = []
+        try:
+            if not ensure_logged_in(driver):
+                p("[ERROR] Could not log in to Airbit")
+                sys.exit(1)
+            for stem in stems_to_check:
+                meta = load_metadata(stem)
+                beat_title = meta.get("beat_name", stem.replace("_", " ").title())
+                ok, vmsg = verify_listing_audio(driver, stem, beat_title)
+                p(f"  [{'OK' if ok else 'BAD'}] {stem}: {vmsg}")
+                if not ok:
+                    bad.append(stem)
+        finally:
+            driver.quit()
+        if bad:
+            p(f"\n[MISMATCH] {len(bad)} listing(s) with wrong audio: {', '.join(bad)}")
+            sys.exit(1)
+        p(f"\n[COMPLETE] All {len(stems_to_check)} listing(s) verified — audio matches.")
+        return
 
     # ── Fix titles mode ──
     if args.fix_titles:
@@ -1653,24 +1916,22 @@ First-time setup:
             p("\n  Next steps:")
             p("    python airbit_upload.py --only army   # Test 1 beat")
             p("    python airbit_upload.py               # Upload all")
-            if sys.stdin.isatty():
+            try:
                 p("\nPress Enter to close browser...")
                 input()
-            else:
-                p("\n[OK] Non-interactive mode — closing browser in 5s...")
-                time.sleep(5)
+            except EOFError:
+                pass
             driver.quit()
             return
 
         # ── Discover mode ──
         if args.discover:
             discover_upload_page(driver)
-            if sys.stdin.isatty():
+            try:
                 p("\nPress Enter to close browser...")
                 input()
-            else:
-                p("\n[OK] Non-interactive mode — closing browser in 5s...")
-                time.sleep(5)
+            except EOFError:
+                pass
             driver.quit()
             return
 
@@ -1693,6 +1954,22 @@ First-time setup:
 
             result = upload_beat(driver, stem, meta, calibrated)
             if result:
+                # ── MANDATORY POST-UPLOAD AUDIO VERIFICATION ──
+                # Download the MP3 Airbit actually stored and compare to the
+                # local beat. A mismatch means the wrong audio got published
+                # (stale-draft bug) — treat as a failed upload, don't record
+                # the URL anywhere so the YT funnel never points at it.
+                beat_title = meta.get("beat_name", stem.replace("_", " ").title())
+                ok, vmsg = verify_listing_audio(driver, stem, beat_title)
+                p(f"  [VERIFY] {vmsg}")
+                if not ok:
+                    fail += 1
+                    failed_stems.append(stem)
+                    p(f"[FAIL] {stem}: AUDIO VERIFICATION FAILED — the Airbit listing "
+                      "does NOT play this beat. Delete the listing on Airbit and re-run.")
+                    if i < len(pending) - 1:
+                        time.sleep(args.delay)
+                    continue
                 listing_url = result if isinstance(result, str) else ""
                 log[stem] = {
                     "title": meta.get("beat_name", stem),
@@ -1731,6 +2008,14 @@ First-time setup:
             p(f"  Failed beats: {', '.join(failed_stems)}")
         p(f"  Log: {LOG_FILE}")
         p(f"{'=' * 60}")
+        if fail:
+            # Non-zero exit so upload.py doesn't report "[AIRBIT] Upload
+            # complete ✓" when every beat actually failed/aborted.
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            sys.exit(1)
 
     except KeyboardInterrupt:
         p("\n\n[!] Interrupted by user")
