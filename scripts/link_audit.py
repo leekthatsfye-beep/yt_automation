@@ -41,12 +41,11 @@ def fetch_store_via_api():
     """
     import json as _json
     import urllib.request
-    beats, cursor = {}, None
+    beats = {}
+    url = f"https://api.airbit.com/users/{AIRBIT_USER_ID}/beats?limit=100"
+    pages = 0
     try:
-        while True:
-            url = f"https://api.airbit.com/users/{AIRBIT_USER_ID}/beats?limit=100"
-            if cursor:
-                url += f"&cursor={cursor}"
+        while url and pages < 30:
             req = urllib.request.Request(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                 "Referer": f"{STORE_BASE}/",
@@ -56,12 +55,17 @@ def fetch_store_via_api():
                 data = _json.loads(resp.read())
             for it in data.get("items", []):
                 slug = it.get("alias") or ""
-                if slug:
-                    beats[slug] = {"title": it.get("name", ""),
-                                   "url": f"{STORE_BASE}/beats/{slug}"}
-            cursor = data.get("cursor")
-            if not cursor or not data.get("items"):
-                break
+                # the API includes state flags; only treat genuinely public,
+                # live listings as valid link targets
+                if not slug or it.get("trashed") or it.get("deleted") \
+                        or it.get("private") or it.get("active") is False:
+                    continue
+                beats[slug] = {"title": it.get("name", ""),
+                               "url": f"{STORE_BASE}/beats/{slug}"}
+            # "cursor" is a page-info object; follow its nextPageUrl
+            cur = data.get("cursor") or {}
+            url = cur.get("nextPageUrl") if isinstance(cur, dict) else None
+            pages += 1
     except Exception as e:
         print(f"[WARN] Airbit API fetch failed ({e}) — will fall back to browser scrape")
         return {}
