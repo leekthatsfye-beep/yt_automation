@@ -233,6 +233,11 @@ def main():
             else:
                 new_desc = desc.replace(f"{STORE_BASE}/beats", new_url, 1)
             if new_desc == desc:
+                # no substitution anchor at all (e.g. old Shorts with bare
+                # descriptions) — append a purchase block instead
+                new_desc = (desc.rstrip() +
+                            f"\n\n🎵 Purchase / Download\n{new_url}\n")
+            if new_desc == desc:
                 continue
             yt.videos().update(part="snippet", body={"id": v["id"], "snippet": {
                 "title": sn["title"], "categoryId": sn.get("categoryId", "10"),
