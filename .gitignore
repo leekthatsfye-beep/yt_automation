@@ -30,6 +30,15 @@ users.json
 .env
 *.env
 
+# Local TLS material for the Instagram OAuth loopback. Self-signed CN=localhost,
+# but a private key does not belong in a public repository regardless of its scope.
+localhost.key
+localhost.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
 # === Cache/data ===
 *.json
 !arrangements/templates/*.json
