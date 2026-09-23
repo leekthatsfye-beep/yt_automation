@@ -14,6 +14,16 @@ without knowing a password. The service's routers include `youtube.py`, `render.
 `files.py` and `system.py`, so a forged token is full control of whatever that service
 can reach — including the stored YouTube OAuth tokens.
 
+`bot_watchdog.sh` contained a **hardcoded live Telegram bot token**, in `HEAD`, in a
+public repository. A bot token is full control of the bot: read every message sent to
+it and send messages as it. `telegram_bot.py` is the control surface for this entire
+system -- renders, uploads, scheduling, channel management -- so this is not a
+notification-only credential. The owner's Telegram chat ID was beside it.
+
+This one was missed by a first, hand-written scan whose pattern was anchored to the
+start of a line; the token sits mid-line inside a shell assignment. That is why
+`scan_secrets.py` in the Media Engine exists and why it runs in CI.
+
 `localhost.key` is a self-signed `CN=localhost` certificate key used by `ig_auth.py`
 for the Instagram OAuth loopback. It cannot authenticate anything on the public
 internet; exposure is low severity but it still does not belong here.
@@ -36,6 +46,12 @@ To rotate, on whatever host runs `app/backend`:
    recent activity and **revoke and re-issue the OAuth tokens** in
    `token*.json` at https://myaccount.google.com/permissions.
 
+**Revoke the Telegram bot token.** Message `@BotFather`, select the bot, then
+`/revoke`. The old token stops working immediately and you get a new one. Supply it to
+`bot_watchdog.sh` through `TELEGRAM_BOT_TOKEN` -- the script now refuses to start
+without it rather than silently sending nothing. Review the bot's recent activity
+while you are there.
+
 Regenerate `localhost.key` / `localhost.crt` at the same time. It is a one-line
 `openssl req` and costs nothing.
 
@@ -48,6 +64,8 @@ force-push:
 
     pip install git-filter-repo
     git filter-repo --force --invert-paths --path .jwt_secret --path localhost.key
+    # bot_watchdog.sh must be kept, so its token is replaced rather than the file dropped:
+    # git filter-repo --replace-text <(echo 'regex:[0-9]{8,10}:AA[A-Za-z0-9_-]{33}==>REDACTED')
     git remote add origin https://github.com/leekthatsfye-beep/yt_automation.git
     git push --force --all && git push --force --tags
 

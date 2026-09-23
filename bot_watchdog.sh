@@ -2,8 +2,11 @@
 # bot_watchdog.sh — runs every 5 minutes via LaunchAgent
 # If bot is dead, sends Telegram message and restarts it
 
-BOT_TOKEN="8357976330:AAGnBdkVgqnk-_YhZLMCvkwDhIuYciZTFhM"
-CHAT_ID="5594051609"  # your Telegram user ID
+# The token was hardcoded here and this repository is public, so it is revoked.
+# Supply the replacement out of band; the script refuses to run without it rather
+# than silently sending nothing.
+BOT_TOKEN="${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN; never hardcode it in a tracked file}"
+CHAT_ID="${TELEGRAM_CHAT_ID:?set TELEGRAM_CHAT_ID}"
 LOG="/Users/fyefye/yt_automation/logs/watchdog.log"
 
 send_telegram() {
