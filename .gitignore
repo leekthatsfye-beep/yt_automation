@@ -62,6 +62,12 @@ Thumbs.db
 # === Whitelist arrangement templates ===
 !arrangements/templates/*.json
 
+# === FY3M3NTARY pipeline — track metadata templates, not media ===
+!fy3mentary/metadata/_template.json
+fy3mentary/clips/
+fy3mentary/output/
+fy3mentary/experiment/
+
 # === Instagram instaloader sessions (sensitive — never commit) ===
 .ig_sessions/
 

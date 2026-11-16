@@ -1,0 +1,9 @@
+{
+  "title": "Episode title here",
+  "hook": "Opening hook text — shown as title card in first 2 seconds. Make it specific and urgent.",
+  "tags": ["fy3mentary", "documentary", "hiphop"],
+  "saga": "saga name if part of a series (e.g. YSL, Gunna, etc.)",
+  "bucket": "",
+  "duration_s": 0,
+  "notes": "editorial notes — why this story, what angle, what conclusion"
+}
